@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Vibecraft Hook - Captures Claude Code events for 3D visualization
 #
 # This script is called by Claude Code hooks and:

@@ -40,7 +40,7 @@ Open http://localhost:4003 and use Claude Code normally. You'll see Claude move 
 **From source:**
 ```bash
 git clone https://github.com/nearcyan/vibecraft
-cd vibecraft && npm install && npm run dev
+cd vibecraft && pnpm install && pnpm run dev
 # Opens on http://localhost:4002
 ```
 

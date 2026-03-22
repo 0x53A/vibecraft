@@ -7,10 +7,30 @@
 
 import type { ManagedSession } from '../../shared/types'
 
+export interface McpServerConfig {
+  name: string
+  command: string
+  args?: string[]
+}
+
+export interface TentaclesTarget {
+  name: string
+  targetType: string
+  params?: Record<string, unknown>
+}
+
+export interface TentaclesConfig {
+  enabled: boolean
+  targets: TentaclesTarget[]
+}
+
 export interface SessionFlags {
   continue?: boolean
   skipPermissions?: boolean
   chrome?: boolean
+  tools?: string[]
+  mcpServers?: McpServerConfig[]
+  tentacles?: TentaclesConfig
 }
 
 export interface CreateSessionResponse {
@@ -30,6 +50,19 @@ export interface ServerInfoResponse {
   error?: string
 }
 
+export interface ResumableSession {
+  sessionId: string
+  cwd: string
+  startedAt: number
+  pid: number
+}
+
+export interface ResumableSessionsResponse {
+  ok: boolean
+  sessions?: ResumableSession[]
+  error?: string
+}
+
 /**
  * Create a SessionAPI instance bound to a specific API URL
  */
@@ -41,13 +74,14 @@ export function createSessionAPI(apiUrl: string) {
     async createSession(
       name?: string,
       cwd?: string,
-      flags?: SessionFlags
+      flags?: SessionFlags,
+      resume?: string
     ): Promise<CreateSessionResponse> {
       try {
         const response = await fetch(`${apiUrl}/sessions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, cwd, flags }),
+          body: JSON.stringify({ name, cwd, flags, resume }),
         })
         return await response.json()
       } catch (e) {
@@ -182,6 +216,61 @@ export function createSessionAPI(apiUrl: string) {
         await fetch(`${apiUrl}/sessions/refresh`, { method: 'POST' })
       } catch (e) {
         console.error('Error refreshing sessions:', e)
+      }
+    },
+
+    async getResumableSessions(): Promise<ResumableSessionsResponse> {
+      try {
+        const response = await fetch(`${apiUrl}/sessions/resumable`)
+        return await response.json()
+      } catch (e) {
+        console.error('Error fetching resumable sessions:', e)
+        return { ok: false, error: 'Network error' }
+      }
+    },
+
+    /**
+     * List tentacles targets for a session
+     */
+    async listTargets(sessionId: string): Promise<{ ok: boolean; targets?: TentaclesTarget[]; error?: string }> {
+      try {
+        const response = await fetch(`${apiUrl}/sessions/${sessionId}/targets`)
+        return await response.json()
+      } catch (e) {
+        console.error('Error listing targets:', e)
+        return { ok: false, error: 'Network error' }
+      }
+    },
+
+    /**
+     * Add a tentacles target to a session
+     */
+    async addTarget(sessionId: string, target: TentaclesTarget): Promise<SimpleResponse> {
+      try {
+        const response = await fetch(`${apiUrl}/sessions/${sessionId}/targets`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(target),
+        })
+        return await response.json()
+      } catch (e) {
+        console.error('Error adding target:', e)
+        return { ok: false, error: 'Network error' }
+      }
+    },
+
+    /**
+     * Remove a tentacles target from a session
+     */
+    async removeTarget(sessionId: string, name: string): Promise<SimpleResponse> {
+      try {
+        const response = await fetch(`${apiUrl}/sessions/${sessionId}/targets/${name}`, {
+          method: 'DELETE',
+        })
+        return await response.json()
+      } catch (e) {
+        console.error('Error removing target:', e)
+        return { ok: false, error: 'Network error' }
       }
     },
   }

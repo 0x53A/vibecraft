@@ -295,6 +295,13 @@ export interface ManagedSession {
     q: number
     r: number
   }
+  /** Pending permission prompt (if status is 'waiting') */
+  pendingPermission?: {
+    id: string
+    tool: string
+    context: string
+    options: Array<{ number: string; label: string }>
+  }
 }
 
 /** Git repository status */

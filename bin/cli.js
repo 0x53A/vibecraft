@@ -77,16 +77,10 @@ function checkHooksConfigured() {
 }
 
 function printHealthCheck() {
-  const jqOk = checkJq()
   const tmuxOk = checkTmux()
   const hooksResult = checkHooksConfigured()
 
   let warnings = []
-
-  if (!jqOk) {
-    warnings.push(`  [!] jq not found - hooks won't work without it
-      Install: brew install jq (macOS) or apt install jq (Linux)`)
-  }
 
   if (!tmuxOk) {
     warnings.push(`  [!] tmux not found - session management won't work
@@ -274,12 +268,18 @@ if (args[0] === 'setup') {
   // Configure ALL hooks
   addHook('PreToolUse', toolHookEntry)
   addHook('PostToolUse', toolHookEntry)
+  addHook('PostToolUseFailure', toolHookEntry)
   addHook('Stop', genericHookEntry)
+  addHook('SubagentStart', genericHookEntry)
   addHook('SubagentStop', genericHookEntry)
   addHook('SessionStart', genericHookEntry)
   addHook('SessionEnd', genericHookEntry)
   addHook('UserPromptSubmit', genericHookEntry)
   addHook('Notification', genericHookEntry)
+  addHook('PreCompact', genericHookEntry)
+  addHook('PermissionRequest', toolHookEntry)
+  addHook('TaskCompleted', genericHookEntry)
+  addHook('TeammateIdle', genericHookEntry)
 
   // Write settings
   try {
@@ -301,21 +301,21 @@ if (args[0] === 'setup') {
   console.log('\nHooks configured:')
   console.log('  - PreToolUse')
   console.log('  - PostToolUse')
+  console.log('  - PostToolUseFailure')
   console.log('  - Stop')
+  console.log('  - SubagentStart')
   console.log('  - SubagentStop')
   console.log('  - SessionStart')
   console.log('  - SessionEnd')
   console.log('  - UserPromptSubmit')
   console.log('  - Notification')
+  console.log('  - PreCompact')
+  console.log('  - PermissionRequest')
+  console.log('  - TaskCompleted')
+  console.log('  - TeammateIdle')
 
-  // Check dependencies
+  // Check dependencies (jq no longer required - hook just forwards raw JSON)
   let hasWarnings = false
-
-  if (!checkJq()) {
-    hasWarnings = true
-    console.log('\n[!] Warning: jq not found')
-    console.log('    Install: brew install jq (macOS) or apt install jq (Linux)')
-  }
 
   if (!checkTmux()) {
     hasWarnings = true
@@ -407,8 +407,10 @@ if (args[0] === 'uninstall') {
 
   // Remove vibecraft hooks from each event type
   const hookTypes = [
-    'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop',
-    'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'Notification'
+    'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Stop',
+    'SubagentStart', 'SubagentStop',
+    'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'Notification',
+    'PreCompact', 'PermissionRequest', 'TaskCompleted', 'TeammateIdle'
   ]
 
   let removedCount = 0
@@ -509,17 +511,16 @@ if (args[0] === 'doctor') {
     issues.push('Node.js 18+ required')
   }
 
-  // jq
+  // jq (optional - no longer required by hooks)
   if (checkJq()) {
     try {
       const jqVersion = execSync('jq --version 2>&1', { encoding: 'utf-8' }).trim()
-      console.log(`  ✓ jq (${jqVersion})`)
+      console.log(`  ✓ jq (${jqVersion}) (optional)`)
     } catch {
-      console.log('  ✓ jq')
+      console.log('  ✓ jq (optional)')
     }
   } else {
-    console.log('  ✗ jq not found')
-    issues.push('jq not installed - hooks will not work')
+    console.log('  - jq not found (not required)')
   }
 
   // tmux
@@ -595,8 +596,10 @@ if (args[0] === 'doctor') {
       const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
       const hooks = settings.hooks || {}
 
-      const hookTypes = ['PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop',
-                         'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'Notification']
+      const hookTypes = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Stop',
+                         'SubagentStart', 'SubagentStop',
+                         'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'Notification',
+                         'PreCompact', 'PermissionRequest', 'TaskCompleted', 'TeammateIdle']
 
       let configuredHooks = []
       let missingHooks = []

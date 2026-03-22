@@ -1,10 +1,11 @@
 /**
  * Zone Info Modal - Displays detailed information about a session/zone
  *
- * Shows session stats, git status, token usage, files touched, etc.
+ * Shows session stats, git status, token usage, files touched, targets, etc.
  */
 
 import type { ManagedSession, GitStatus } from '../../shared/types'
+import type { SessionAPI, TentaclesTarget } from '../api/SessionAPI'
 import { soundManager } from '../audio'
 import { formatTimeAgo } from './FeedManager'
 
@@ -29,6 +30,8 @@ export interface ZoneInfoData {
 
 let modal: HTMLElement | null = null
 let soundEnabled = true
+let sessionAPI: SessionAPI | null = null
+let currentSessionId: string | null = null
 
 // ============================================================================
 // Public API
@@ -37,8 +40,9 @@ let soundEnabled = true
 /**
  * Initialize the zone info modal
  */
-export function setupZoneInfoModal(options: { soundEnabled: boolean }): void {
+export function setupZoneInfoModal(options: { soundEnabled: boolean; sessionAPI?: SessionAPI }): void {
   soundEnabled = options.soundEnabled
+  if (options.sessionAPI) sessionAPI = options.sessionAPI
   modal = document.getElementById('zone-info-modal')
 
   const closeBtn = document.getElementById('zone-info-close')
@@ -69,8 +73,12 @@ export function showZoneInfoModal(data: ZoneInfoData): void {
     soundManager.play('modal_open')
   }
 
+  currentSessionId = data.managedSession.id
   renderContent(data)
   modal.classList.add('visible')
+
+  // Fetch targets asynchronously
+  fetchAndRenderTargets(data.managedSession.id)
 }
 
 /**
@@ -196,6 +204,13 @@ function renderContent(data: ZoneInfoData): void {
     </div>
     ` : ''}
 
+    <!-- Tentacles Targets (populated async) -->
+    <div class="zone-info-section zone-info-targets-section" id="zone-info-targets" style="display: none;">
+      <div class="zone-info-section-title">Tentacles Targets</div>
+      <div id="zone-info-targets-list"></div>
+      <div class="zone-info-targets-actions" id="zone-info-targets-actions"></div>
+    </div>
+
     <!-- IDs (for debugging) -->
     <div class="zone-info-section zone-info-ids">
       <div class="zone-info-section-title">Identifiers</div>
@@ -285,6 +300,236 @@ function renderGitStatus(git: GitStatus): string {
       ` : ''}
     </div>
   `
+}
+
+// ============================================================================
+// Targets Management
+// ============================================================================
+
+async function fetchAndRenderTargets(sessionId: string): Promise<void> {
+  if (!sessionAPI) return
+
+  const section = document.getElementById('zone-info-targets')
+  const list = document.getElementById('zone-info-targets-list')
+  const actions = document.getElementById('zone-info-targets-actions')
+  if (!section || !list || !actions) return
+
+  const result = await sessionAPI.listTargets(sessionId)
+  if (!result.ok || !result.targets) {
+    // Tentacles not enabled for this session — hide section
+    section.style.display = 'none'
+    return
+  }
+
+  section.style.display = ''
+  renderTargetsList(list, result.targets, sessionId)
+  renderTargetsActions(actions, sessionId)
+}
+
+function renderTargetsList(container: HTMLElement, targets: TentaclesTarget[], sessionId: string): void {
+  if (targets.length === 0) {
+    container.innerHTML = '<div class="zone-info-muted">No targets configured</div>'
+    return
+  }
+
+  container.innerHTML = targets.map(t => `
+    <div class="zone-info-target">
+      <div class="zone-info-target-header">
+        <span class="zone-info-target-name">${escapeHtml(t.name)}</span>
+        <span class="zone-info-target-type zone-info-target-type--${t.targetType}">${escapeHtml(t.targetType)}</span>
+        <button class="zone-info-target-remove" data-target-name="${escapeHtml(t.name)}" title="Remove target">&times;</button>
+      </div>
+      ${renderTargetParams(t)}
+    </div>
+  `).join('')
+
+  // Wire up remove buttons
+  container.querySelectorAll('.zone-info-target-remove').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const name = (btn as HTMLElement).dataset.targetName
+      if (!name || !sessionAPI) return
+      const result = await sessionAPI.removeTarget(sessionId, name)
+      if (result.ok) {
+        fetchAndRenderTargets(sessionId)
+      }
+    })
+  })
+}
+
+function renderTargetParams(target: TentaclesTarget): string {
+  if (!target.params || Object.keys(target.params).length === 0) return ''
+
+  const params = target.params
+  const rows: string[] = []
+
+  if (params.container) rows.push(`<span class="zone-info-label">Container</span><span class="zone-info-value zone-info-mono">${escapeHtml(String(params.container))}</span>`)
+  if (params.image) rows.push(`<span class="zone-info-label">Image</span><span class="zone-info-value zone-info-mono">${escapeHtml(String(params.image))}</span>`)
+  if (params.dockerfile) rows.push(`<span class="zone-info-label">Dockerfile</span><span class="zone-info-value zone-info-mono">${escapeHtml(String(params.dockerfile))}</span>`)
+  if (params.host) rows.push(`<span class="zone-info-label">Host</span><span class="zone-info-value zone-info-mono">${escapeHtml(String(params.host))}</span>`)
+  if (params.mode) rows.push(`<span class="zone-info-label">Mode</span><span class="zone-info-value">${escapeHtml(String(params.mode))}</span>`)
+
+  if (params.editable) rows.push(`<span class="zone-info-label">Editable</span><span class="zone-info-value">Yes — agent can modify Dockerfile</span>`)
+
+  if (Array.isArray(params.volumes) && params.volumes.length > 0) {
+    rows.push(`<span class="zone-info-label">Volumes</span><span class="zone-info-value zone-info-mono">${(params.volumes as string[]).map(v => escapeHtml(v)).join('<br>')}</span>`)
+  }
+
+  if (rows.length === 0) return ''
+  return `<div class="zone-info-target-params">${rows.map(r => `<div class="zone-info-row">${r}</div>`).join('')}</div>`
+}
+
+function renderTargetsActions(container: HTMLElement, sessionId: string): void {
+  container.innerHTML = `
+    <div class="zone-info-targets-buttons">
+      <button class="zone-info-target-add-btn" id="zone-info-add-host">+ Host</button>
+      <button class="zone-info-target-add-btn" id="zone-info-add-container">+ Container</button>
+    </div>
+    <div id="zone-info-add-form" style="display: none;"></div>
+  `
+
+  document.getElementById('zone-info-add-host')?.addEventListener('click', async () => {
+    if (!sessionAPI) return
+    const name = prompt('Host target name:')
+    if (!name) return
+    const result = await sessionAPI.addTarget(sessionId, { name, targetType: 'host' })
+    if (result.ok) {
+      fetchAndRenderTargets(sessionId)
+    }
+  })
+
+  document.getElementById('zone-info-add-container')?.addEventListener('click', () => {
+    showAddContainerForm(sessionId)
+  })
+}
+
+function showAddContainerForm(sessionId: string): void {
+  const form = document.getElementById('zone-info-add-form')
+  if (!form) return
+
+  form.style.display = ''
+  form.innerHTML = `
+    <div class="zone-info-add-container-form">
+      <div class="zone-info-row">
+        <label class="zone-info-label" for="zi-target-name">Name</label>
+        <input id="zi-target-name" class="zone-info-input" placeholder="my-container" />
+      </div>
+      <div class="zone-info-add-mode">
+        <label class="tentacles-radio"><input type="radio" name="zi-container-mode" value="container" checked /> Existing</label>
+        <label class="tentacles-radio"><input type="radio" name="zi-container-mode" value="image" /> From Image</label>
+        <label class="tentacles-radio"><input type="radio" name="zi-container-mode" value="dockerfile" /> From Dockerfile</label>
+      </div>
+      <div id="zi-mode-fields">
+        <div class="zone-info-row">
+          <label class="zone-info-label" for="zi-container-name">Container</label>
+          <input id="zi-container-name" class="zone-info-input" placeholder="container name" />
+        </div>
+      </div>
+      <div id="zi-volumes" style="display: none;">
+        <div class="zone-info-label" style="margin-bottom: 4px;">Volumes</div>
+        <div id="zi-volumes-list"></div>
+        <button class="zone-info-target-add-btn zone-info-target-add-btn--small" id="zi-add-volume">+ Volume</button>
+      </div>
+      <div class="zone-info-targets-buttons" style="margin-top: 8px;">
+        <button class="zone-info-target-add-btn zone-info-target-add-btn--primary" id="zi-submit-target">Add</button>
+        <button class="zone-info-target-add-btn" id="zi-cancel-target">Cancel</button>
+      </div>
+    </div>
+  `
+
+  const modeRadios = form.querySelectorAll('input[name="zi-container-mode"]')
+  const modeFields = document.getElementById('zi-mode-fields')!
+  const volumesSection = document.getElementById('zi-volumes')!
+
+  function updateModeFields(): void {
+    const mode = (form!.querySelector('input[name="zi-container-mode"]:checked') as HTMLInputElement)?.value
+    if (mode === 'container') {
+      modeFields.innerHTML = `
+        <div class="zone-info-row">
+          <label class="zone-info-label" for="zi-container-name">Container</label>
+          <input id="zi-container-name" class="zone-info-input" placeholder="container name" />
+        </div>`
+      volumesSection.style.display = 'none'
+    } else if (mode === 'image') {
+      modeFields.innerHTML = `
+        <div class="zone-info-row">
+          <label class="zone-info-label" for="zi-image-name">Image</label>
+          <input id="zi-image-name" class="zone-info-input" placeholder="ubuntu:24.04" />
+        </div>`
+      volumesSection.style.display = ''
+    } else if (mode === 'dockerfile') {
+      modeFields.innerHTML = `
+        <div class="zone-info-row">
+          <label class="zone-info-label" for="zi-dockerfile-path">Dockerfile</label>
+          <input id="zi-dockerfile-path" class="zone-info-input" placeholder="/path/to/Dockerfile" />
+        </div>
+        <div class="zone-info-row">
+          <label class="tentacles-radio"><input type="checkbox" id="zi-editable-checkbox" /> Allow agent to modify Dockerfile</label>
+        </div>`
+      volumesSection.style.display = ''
+    }
+  }
+
+  modeRadios.forEach(r => r.addEventListener('change', updateModeFields))
+
+  document.getElementById('zi-add-volume')?.addEventListener('click', () => {
+    const list = document.getElementById('zi-volumes-list')!
+    const row = document.createElement('div')
+    row.className = 'tentacles-volume-row'
+    row.innerHTML = `
+      <input class="zi-vol-host" placeholder="/host/path" />
+      <span class="tentacles-vol-arrow">:</span>
+      <input class="zi-vol-container" placeholder="/container/path" />
+      <button class="zone-info-target-remove" title="Remove">&times;</button>
+    `
+    row.querySelector('.zone-info-target-remove')?.addEventListener('click', () => row.remove())
+    list.appendChild(row)
+  })
+
+  document.getElementById('zi-cancel-target')?.addEventListener('click', () => {
+    form.style.display = 'none'
+    form.innerHTML = ''
+  })
+
+  document.getElementById('zi-submit-target')?.addEventListener('click', async () => {
+    if (!sessionAPI) return
+    const name = (document.getElementById('zi-target-name') as HTMLInputElement)?.value.trim()
+    if (!name) return
+
+    const mode = (form.querySelector('input[name="zi-container-mode"]:checked') as HTMLInputElement)?.value
+    const params: Record<string, unknown> = { mode }
+
+    if (mode === 'container') {
+      params.container = (document.getElementById('zi-container-name') as HTMLInputElement)?.value.trim()
+      if (!params.container) return
+    } else if (mode === 'image') {
+      params.image = (document.getElementById('zi-image-name') as HTMLInputElement)?.value.trim()
+      if (!params.image) return
+      params.volumes = collectVolumes()
+    } else if (mode === 'dockerfile') {
+      params.dockerfile = (document.getElementById('zi-dockerfile-path') as HTMLInputElement)?.value.trim()
+      if (!params.dockerfile) return
+      params.volumes = collectVolumes()
+      const editable = (document.getElementById('zi-editable-checkbox') as HTMLInputElement)?.checked
+      if (editable) params.editable = true
+    }
+
+    const result = await sessionAPI.addTarget(sessionId, { name, targetType: 'container', params })
+    if (result.ok) {
+      form.style.display = 'none'
+      form.innerHTML = ''
+      fetchAndRenderTargets(sessionId)
+    }
+  })
+}
+
+function collectVolumes(): string[] {
+  const volumes: string[] = []
+  document.querySelectorAll('#zi-volumes-list .tentacles-volume-row').forEach(row => {
+    const host = (row.querySelector('.zi-vol-host') as HTMLInputElement)?.value.trim()
+    const container = (row.querySelector('.zi-vol-container') as HTMLInputElement)?.value.trim()
+    if (host && container) volumes.push(`${host}:${container}`)
+  })
+  return volumes
 }
 
 // ============================================================================

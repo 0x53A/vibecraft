@@ -1,12 +1,12 @@
 /**
- * Permission Modal - Tool permission request UI
+ * Permission Prompt - Inline tool permission request in activity feed
  *
- * Displays permission prompts when Claude sessions run without
+ * Displays permission prompts as feed items when Claude sessions run without
  * --dangerously-skip-permissions and need user approval for tools.
  */
 
 import { soundManager } from '../audio'
-import { escapeHtml } from './FeedManager'
+import type { FeedManager } from './FeedManager'
 import type { WorkshopScene } from '../scene/WorkshopScene'
 import type { AttentionSystem } from '../systems/AttentionSystem'
 import type { ManagedSession } from '../../shared/types'
@@ -22,6 +22,7 @@ export interface PermissionOption {
 
 export interface PermissionData {
   sessionId: string
+  permissionId: string
   tool: string
   context: string
   options: PermissionOption[]
@@ -33,6 +34,10 @@ export interface PermissionModalContext {
   apiUrl: string
   attentionSystem: AttentionSystem | null
   getManagedSessions: () => ManagedSession[]
+  feedManager: FeedManager | null
+  getSessionColor: (managedId: string) => number | undefined
+  /** Convert managed session ID to Claude session ID (used for feed filtering) */
+  getClaudeSessionId: (managedId: string) => string | undefined
 }
 
 // ============================================================================
@@ -47,74 +52,57 @@ let context: PermissionModalContext | null = null
 // ============================================================================
 
 /**
- * Initialize the permission modal with dependencies
+ * Initialize the permission system with dependencies
  */
 export function setupPermissionModal(ctx: PermissionModalContext): void {
   context = ctx
 
-  const buttonsContainer = document.getElementById('permission-buttons')
-
-  // Event delegation for dynamic buttons
-  buttonsContainer?.addEventListener('click', (e) => {
-    const btn = (e.target as HTMLElement).closest('.permission-btn') as HTMLElement
-    if (btn) {
-      const optionNumber = btn.dataset.option
-      if (optionNumber) {
-        sendPermissionResponse(optionNumber)
-      }
-    }
-  })
-
   // Keyboard shortcuts - press the number key to select that option
   document.addEventListener('keydown', (e) => {
     if (!currentPermission) return
+
+    // Don't intercept if user is typing in an input
+    const target = e.target as HTMLElement
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
 
     // Number keys 1-9 to select options
     if (/^[1-9]$/.test(e.key)) {
       const option = currentPermission.options.find(o => o.number === e.key)
       if (option) {
         e.preventDefault()
-        sendPermissionResponse(option.number)
+        sendPermissionResponse(currentPermission.permissionId, option.number)
       }
     }
-
-    // NOTE: No Escape-to-close - user MUST select an option or the session stays hung
   })
-
-  // NOTE: No click-outside-to-close - user MUST select an option
 }
 
 /**
- * Show the permission modal
+ * Show a permission prompt inline in the activity feed
  */
 export function showPermissionModal(
   sessionId: string,
+  permissionId: string,
   tool: string,
   permContext: string,
   options: PermissionOption[]
 ): void {
-  const modal = document.getElementById('permission-modal')
-  const toolName = document.getElementById('permission-tool')
-  const contextEl = document.getElementById('permission-context')
-  const buttonsContainer = document.getElementById('permission-buttons')
+  if (!context?.feedManager) return
 
-  if (!modal || !buttonsContainer || !context) return
+  currentPermission = { sessionId, permissionId, tool, context: permContext, options }
 
-  currentPermission = { sessionId, tool, context: permContext, options }
+  const sessionColor = context.getSessionColor(sessionId)
+  // Feed uses Claude session IDs for filtering, not managed session IDs
+  const feedSessionId = context.getClaudeSessionId(sessionId) ?? sessionId
 
-  if (toolName) toolName.textContent = tool
-  if (contextEl) contextEl.textContent = permContext
-
-  // Generate buttons dynamically
-  buttonsContainer.innerHTML = options.map(opt => `
-    <button type="button" class="permission-btn" data-option="${opt.number}">
-      <span class="permission-btn-num">${opt.number}</span>
-      ${escapeHtml(opt.label)}
-    </button>
-  `).join('')
-
-  // Show modal
-  modal.classList.add('visible')
+  // Add inline permission prompt to the feed
+  context.feedManager.showPermission(
+    feedSessionId,
+    tool,
+    permContext,
+    options,
+    (response) => sendPermissionResponse(permissionId, response),
+    sessionColor
+  )
 
   // Set attention on the session's zone
   const managed = context.getManagedSessions().find(s => s.id === sessionId)
@@ -133,27 +121,31 @@ export function showPermissionModal(
 }
 
 /**
- * Hide the permission modal
+ * Hide/resolve the permission prompt in the feed
  */
 export function hidePermissionModal(): void {
-  const modal = document.getElementById('permission-modal')
-  modal?.classList.remove('visible')
-
-  // Clear attention if we had one
-  if (currentPermission && context) {
-    const managed = context.getManagedSessions().find(s => s.id === currentPermission!.sessionId)
-    if (managed?.claudeSessionId && context.scene) {
-      context.scene.clearZoneAttention(managed.claudeSessionId)
-      context.scene.setZoneStatus(managed.claudeSessionId, 'working')
-    }
-    context.attentionSystem?.remove(currentPermission.sessionId)
+  if (!currentPermission || !context?.feedManager) {
+    currentPermission = null
+    return
   }
+
+  // Remove from feed
+  const feedSessionId = context.getClaudeSessionId(currentPermission.sessionId) ?? currentPermission.sessionId
+  context.feedManager.hidePermission(feedSessionId)
+
+  // Clear attention
+  const managed = context.getManagedSessions().find(s => s.id === currentPermission!.sessionId)
+  if (managed?.claudeSessionId && context.scene) {
+    context.scene.clearZoneAttention(managed.claudeSessionId)
+    context.scene.setZoneStatus(managed.claudeSessionId, 'working')
+  }
+  context.attentionSystem?.remove(currentPermission.sessionId)
 
   currentPermission = null
 }
 
 /**
- * Check if permission modal is currently shown
+ * Check if a permission prompt is currently active
  */
 export function isPermissionModalVisible(): boolean {
   return currentPermission !== null
@@ -163,14 +155,14 @@ export function isPermissionModalVisible(): boolean {
 // Internal
 // ============================================================================
 
-async function sendPermissionResponse(response: string): Promise<void> {
+async function sendPermissionResponse(permissionId: string, response: string): Promise<void> {
   if (!currentPermission || !context) return
 
   try {
     await fetch(`${context.apiUrl}/sessions/${currentPermission.sessionId}/permission`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ response }),
+      body: JSON.stringify({ permissionId, response }),
     })
   } catch (e) {
     console.error('Failed to send permission response:', e)

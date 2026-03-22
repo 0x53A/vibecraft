@@ -471,6 +471,128 @@ export class FeedManager {
     })
   }
 
+  // ── Permission prompts (inline in feed) ─────────────────────────────────
+  private permissionItems = new Map<string, HTMLElement>()
+
+  /**
+   * Show a permission prompt inline in the feed
+   */
+  showPermission(
+    sessionId: string,
+    tool: string,
+    permContext: string,
+    options: Array<{ number: string; label: string }>,
+    onRespond: (response: string) => void,
+    sessionColor?: number
+  ): void {
+    if (!this.feedEl) return
+
+    // Remove existing permission prompt for this session
+    this.hidePermission(sessionId)
+    this.removeEmptyState()
+
+    const item = document.createElement('div')
+    item.className = 'feed-item permission-prompt'
+    item.dataset.sessionId = sessionId
+
+    if (sessionColor !== undefined) {
+      item.style.borderLeftColor = `#${sessionColor.toString(16).padStart(6, '0')}`
+      item.style.borderLeftWidth = '3px'
+      item.style.borderLeftStyle = 'solid'
+    }
+
+    // Build a human-readable summary from the context
+    let summaryHtml = ''
+    let contextHtml = ''
+    try {
+      const parsed = JSON.parse(permContext)
+      // Tool input object — extract key info
+      if (parsed && typeof parsed === 'object') {
+        const file = parsed.file_path || parsed.path || ''
+        const command = parsed.command || ''
+        const pattern = parsed.pattern || ''
+        if (file) {
+          summaryHtml = `<div class="permission-inline-file">${escapeHtml(this.shortenPath(file))}</div>`
+        } else if (command) {
+          summaryHtml = `<div class="feed-item-code">${escapeHtml(command)}</div>`
+        } else if (pattern) {
+          summaryHtml = `<div class="permission-inline-file">Pattern: ${escapeHtml(pattern)}</div>`
+        }
+      }
+    } catch {
+      // Not JSON — show raw context (tmux poller output)
+      const contextLines = permContext.trim().split('\n').slice(0, 8)
+      if (contextLines.length > 0 && contextLines[0]) {
+        contextHtml = `<div class="permission-inline-context"><pre>${escapeHtml(contextLines.join('\n'))}</pre></div>`
+      }
+    }
+
+    const buttonsHtml = options.map(opt => `
+      <button type="button" class="permission-inline-btn" data-option="${opt.number}">
+        <span class="permission-inline-num">${opt.number}</span>
+        ${escapeHtml(opt.label)}
+      </button>
+    `).join('')
+
+    item.innerHTML = `
+      <div class="feed-item-header">
+        <div class="feed-item-icon">🔒</div>
+        <div class="feed-item-title">Permission: ${escapeHtml(tool)}</div>
+        <div class="feed-item-time">${new Date().toLocaleTimeString()}</div>
+      </div>
+      ${summaryHtml}
+      ${contextHtml}
+      <div class="permission-inline-buttons">${buttonsHtml}</div>
+    `
+
+    // Button click handlers
+    item.querySelectorAll('.permission-inline-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const optNum = (btn as HTMLElement).dataset.option
+        if (optNum) onRespond(optNum)
+      })
+    })
+
+    this.permissionItems.set(sessionId, item)
+    this.feedEl.appendChild(item)
+
+    // Apply filter
+    if (this.activeFilter !== null && sessionId !== this.activeFilter) {
+      item.style.display = 'none'
+    } else {
+      this.scrollToBottom()
+    }
+  }
+
+  /**
+   * Remove permission prompt from the feed
+   */
+  hidePermission(sessionId: string): void {
+    const item = this.permissionItems.get(sessionId)
+    if (item) {
+      item.remove()
+      this.permissionItems.delete(sessionId)
+    }
+  }
+
+  /**
+   * Check if a permission prompt is currently shown for a session
+   */
+  hasPermission(sessionId: string): boolean {
+    return this.permissionItems.has(sessionId)
+  }
+
+  /**
+   * Get the session ID of any active permission prompt
+   */
+  getActivePermissionSessionId(): string | null {
+    // Return the first one (usually there's only one)
+    for (const sid of this.permissionItems.keys()) {
+      return sid
+    }
+    return null
+  }
+
   /**
    * Create HTML for tool response preview
    */

@@ -543,3 +543,117 @@
     transform: translateY(-4px);
   }
 }
+
+/* ── Inline permission prompts ───────────────────────────────────────────── */
+
+.feed-item.permission-prompt {
+  background: rgba(234, 179, 8, 0.08);
+  border: 1px solid rgba(234, 179, 8, 0.25);
+  border-radius: 8px;
+  padding: 12px;
+  margin: 8px 0;
+}
+
+.permission-inline-context {
+  margin: 8px 0;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.permission-inline-file {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  color: rgba(167, 139, 250, 0.9);
+  margin: 4px 0 8px;
+  word-break: break-all;
+}
+
+.permission-inline-context pre {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.6);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.permission-inline-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.permission-inline-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  text-align: left;
+}
+
+.permission-inline-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.permission-inline-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+/* Option 1 (Yes) - green accent */
+.permission-inline-btn[data-option="1"] {
+  border-color: rgba(34, 197, 94, 0.3);
+}
+.permission-inline-btn[data-option="1"]:hover {
+  background: rgba(34, 197, 94, 0.15);
+}
+.permission-inline-btn[data-option="1"] .permission-inline-num {
+  background: rgba(34, 197, 94, 0.25);
+  color: #4ade80;
+}
+
+/* Option 2 - blue accent */
+.permission-inline-btn[data-option="2"] {
+  border-color: rgba(59, 130, 246, 0.3);
+}
+.permission-inline-btn[data-option="2"]:hover {
+  background: rgba(59, 130, 246, 0.15);
+}
+.permission-inline-btn[data-option="2"] .permission-inline-num {
+  background: rgba(59, 130, 246, 0.25);
+  color: #60a5fa;
+}
+
+/* Option 3 (No) - red accent */
+.permission-inline-btn[data-option="3"] {
+  border-color: rgba(239, 68, 68, 0.3);
+}
+.permission-inline-btn[data-option="3"]:hover {
+  background: rgba(239, 68, 68, 0.15);
+}
+.permission-inline-btn[data-option="3"] .permission-inline-num {
+  background: rgba(239, 68, 68, 0.25);
+  color: #f87171;
+}
+
+/* Resolved state */
+.feed-item.permission-resolved {
+  opacity: 0.5;
+}

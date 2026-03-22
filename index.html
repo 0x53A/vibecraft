@@ -177,12 +177,30 @@
         </div>
 
         <div class="modal-field">
-          <label>Options</label>
+          <label>Session Mode</label>
           <div class="modal-checkboxes">
             <label class="modal-checkbox">
-              <input type="checkbox" id="session-opt-continue" />
-              <span class="checkbox-label">Continue <code>-c</code></span>
+              <input type="radio" name="session-mode" value="new" checked />
+              <span class="checkbox-label">New session</span>
             </label>
+            <label class="modal-checkbox">
+              <input type="radio" name="session-mode" value="continue" />
+              <span class="checkbox-label">Continue most recent <code>-c</code></span>
+            </label>
+            <label class="modal-checkbox">
+              <input type="radio" name="session-mode" value="resume" />
+              <span class="checkbox-label">Resume specific session <code>--resume</code></span>
+            </label>
+          </div>
+          <div class="resume-input-wrapper" id="resume-input-wrapper" style="display:none; margin-top: 8px;">
+            <input type="text" id="session-resume-input" list="resumable-sessions-list" placeholder="Select or paste session ID" autocomplete="off" />
+            <datalist id="resumable-sessions-list"></datalist>
+          </div>
+        </div>
+
+        <div class="modal-field">
+          <label>Options</label>
+          <div class="modal-checkboxes">
             <label class="modal-checkbox">
               <input type="checkbox" id="session-opt-skip-perms" checked />
               <span class="checkbox-label">Skip permissions <code>--dangerously-skip-permissions</code></span>
@@ -191,6 +209,87 @@
               <input type="checkbox" id="session-opt-chrome" />
               <span class="checkbox-label">Chrome <code>--chrome</code></span>
             </label>
+            <label class="modal-checkbox">
+              <input type="checkbox" id="session-opt-memory" checked />
+              <span class="checkbox-label">Memory</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-field">
+          <label>System Prompt</label>
+          <div class="modal-checkboxes">
+            <label class="modal-checkbox">
+              <input type="radio" name="system-prompt-mode" value="default" checked />
+              <span class="checkbox-label">Default</span>
+            </label>
+            <label class="modal-checkbox">
+              <input type="radio" name="system-prompt-mode" value="append" />
+              <span class="checkbox-label">Append</span>
+            </label>
+            <label class="modal-checkbox">
+              <input type="radio" name="system-prompt-mode" value="replace" />
+              <span class="checkbox-label">Replace</span>
+            </label>
+          </div>
+          <textarea id="session-system-prompt" class="modal-textarea" placeholder="System prompt text..." rows="3" style="display:none; margin-top: 8px;"></textarea>
+        </div>
+
+        <div class="modal-field">
+          <label class="collapsible-label" id="tools-toggle">Tools <span class="collapse-arrow">▶</span></label>
+          <div class="collapsible-content" id="tools-section">
+            <div class="tools-actions">
+              <button type="button" class="tools-action-btn" id="tools-select-all">All</button>
+              <button type="button" class="tools-action-btn" id="tools-select-none">None</button>
+            </div>
+            <div class="modal-checkboxes tools-grid" id="tools-checkboxes">
+              <label class="modal-checkbox tool-checkbox"><input type="checkbox" value="Read" checked /><span class="checkbox-label">Read</span></label>
+              <label class="modal-checkbox tool-checkbox"><input type="checkbox" value="Edit" checked /><span class="checkbox-label">Edit</span></label>
+              <label class="modal-checkbox tool-checkbox"><input type="checkbox" value="Write" checked /><span class="checkbox-label">Write</span></label>
+              <label class="modal-checkbox tool-checkbox"><input type="checkbox" value="Bash" checked /><span class="checkbox-label">Bash</span></label>
+              <label class="modal-checkbox tool-checkbox"><input type="checkbox" value="Grep" checked /><span class="checkbox-label">Grep</span></label>
+              <label class="modal-checkbox tool-checkbox"><input type="checkbox" value="Glob" checked /><span class="checkbox-label">Glob</span></label>
+              <label class="modal-checkbox tool-checkbox"><input type="checkbox" value="WebFetch" checked /><span class="checkbox-label">WebFetch</span></label>
+              <label class="modal-checkbox tool-checkbox"><input type="checkbox" value="WebSearch" checked /><span class="checkbox-label">WebSearch</span></label>
+              <label class="modal-checkbox tool-checkbox"><input type="checkbox" value="Agent" checked /><span class="checkbox-label">Agent</span></label>
+              <label class="modal-checkbox tool-checkbox"><input type="checkbox" value="Task" checked /><span class="checkbox-label">Task</span></label>
+              <label class="modal-checkbox tool-checkbox"><input type="checkbox" value="TodoWrite" checked /><span class="checkbox-label">TodoWrite</span></label>
+              <label class="modal-checkbox tool-checkbox"><input type="checkbox" value="NotebookEdit" checked /><span class="checkbox-label">NotebookEdit</span></label>
+              <label class="modal-checkbox tool-checkbox"><input type="checkbox" value="AskUserQuestion" checked /><span class="checkbox-label">AskUser</span></label>
+              <label class="modal-checkbox tool-checkbox"><input type="checkbox" value="LSP" checked /><span class="checkbox-label">LSP</span></label>
+            </div>
+            <div class="field-hint">Uncheck tools to restrict this session. All checked = default (all tools).</div>
+          </div>
+        </div>
+
+        <div class="modal-field">
+          <label class="collapsible-label" id="mcp-toggle">MCP Servers <span class="collapse-arrow">▶</span></label>
+          <div class="collapsible-content" id="mcp-section">
+            <div id="mcp-servers-list"></div>
+            <button type="button" class="tools-action-btn" id="mcp-add-btn">+ Add Server</button>
+            <div class="field-hint">Add custom MCP servers for this session. Each gets passed via <code>--mcp-config</code>.</div>
+          </div>
+        </div>
+
+        <div class="modal-field">
+          <label class="collapsible-label" id="tentacles-toggle">Tentacles <span class="collapse-arrow">▶</span></label>
+          <div class="collapsible-content" id="tentacles-section">
+            <div class="modal-checkboxes" style="margin-bottom: 10px;">
+              <label class="modal-checkbox">
+                <input type="checkbox" id="tentacles-enabled" />
+                <span class="checkbox-label">Enable remote execution proxy</span>
+              </label>
+              <label class="modal-checkbox">
+                <input type="checkbox" id="tentacles-host" checked disabled />
+                <span class="checkbox-label">Host <code>local execution</code></span>
+              </label>
+            </div>
+            <div id="tentacles-targets-list"></div>
+            <div class="tentacles-add-buttons">
+              <button type="button" class="tools-action-btn" id="tentacles-add-container" disabled>+ Container</button>
+              <button type="button" class="tools-action-btn" id="tentacles-add-ssh" disabled>+ SSH</button>
+            </div>
+            <div class="field-hint">Route Bash/Read/Write/Edit/Glob/Grep through tentacles. Claude picks target per tool call.</div>
           </div>
         </div>
 
@@ -356,23 +455,6 @@
     </div>
 
     <!-- Permission Modal (for tool permissions) -->
-    <div id="permission-modal">
-      <div class="modal-content permission-modal-content">
-        <div class="modal-header">
-          <span class="permission-badge">Permission Required</span>
-          <h3>Allow <span class="permission-tool" id="permission-tool">Tool</span>?</h3>
-        </div>
-
-        <div class="permission-context" id="permission-context">
-          <!-- Context will be inserted here -->
-        </div>
-
-        <div class="permission-buttons" id="permission-buttons">
-          <!-- Buttons will be generated dynamically based on options -->
-        </div>
-      </div>
-    </div>
-
     <!-- Zone Info Modal (for session details) -->
     <div id="zone-info-modal">
       <div class="modal-content zone-info-modal-content">

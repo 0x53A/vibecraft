@@ -86,7 +86,7 @@ const AGENT_PORT = getAgentPort()
 // In prod (hosted), connect to localhost where user's agent runs
 const WS_URL = import.meta.env.DEV
   ? `ws://${window.location.host}/ws`
-  : `ws://localhost:${AGENT_PORT}`
+  : `ws://localhost:${AGENT_PORT}/ws`
 
 const API_URL = import.meta.env.DEV
   ? '/api'
@@ -369,6 +369,12 @@ interface SessionFlags {
   continue?: boolean
   skipPermissions?: boolean
   chrome?: boolean
+  memory?: boolean
+  tools?: string[]
+  mcpServers?: { name: string; command: string; args?: string[] }[]
+  tentacles?: { enabled: boolean; targets: { name: string; targetType: string; params?: Record<string, unknown> }[] }
+  systemPromptMode?: string
+  systemPromptText?: string
 }
 
 async function createManagedSession(
@@ -376,9 +382,10 @@ async function createManagedSession(
   cwd?: string,
   flags?: SessionFlags,
   hintPosition?: { x: number; z: number },
-  pendingZoneId?: string
+  pendingZoneId?: string,
+  resume?: string
 ): Promise<void> {
-  const data = await sessionAPI.createSession(name, cwd, flags)
+  const data = await sessionAPI.createSession(name, cwd, flags, resume)
 
   if (!data.ok) {
     console.error('Failed to create session:', data.error)
@@ -566,6 +573,71 @@ function openNewSessionModal(hintPosition?: { x: number; z: number }): void {
   }
   if (cwdInput) cwdInput.value = ''
 
+  // Reset session mode to "new"
+  const newRadio = document.querySelector<HTMLInputElement>('input[name="session-mode"][value="new"]')
+  if (newRadio) newRadio.checked = true
+  const resumeWrapper = document.getElementById('resume-input-wrapper')
+  if (resumeWrapper) resumeWrapper.style.display = 'none'
+
+  // Reset system prompt to "default"
+  const defaultPromptRadio = document.querySelector<HTMLInputElement>('input[name="system-prompt-mode"][value="default"]')
+  if (defaultPromptRadio) defaultPromptRadio.checked = true
+  const sysPromptTextarea = document.getElementById('session-system-prompt') as HTMLTextAreaElement
+  if (sysPromptTextarea) { sysPromptTextarea.value = ''; sysPromptTextarea.style.display = 'none' }
+
+  // Reset memory checkbox
+  const memCheck = document.getElementById('session-opt-memory') as HTMLInputElement
+  if (memCheck) memCheck.checked = true
+
+  // Reset resume input and populate datalist
+  const resumeInput = document.getElementById('session-resume-input') as HTMLInputElement
+  const resumeDatalist = document.getElementById('resumable-sessions-list') as HTMLDataListElement
+  if (resumeInput) resumeInput.value = ''
+  if (resumeDatalist) {
+    resumeDatalist.innerHTML = ''
+    sessionAPI.getResumableSessions().then(data => {
+      if (data.ok && data.sessions) {
+        for (const s of data.sessions) {
+          const opt = document.createElement('option')
+          const date = new Date(s.startedAt)
+          const timeStr = date.toLocaleString()
+          const dirName = s.cwd.split('/').pop() || s.cwd
+          opt.value = s.sessionId
+          opt.label = `${dirName} — ${timeStr} — ${s.cwd}`
+          opt.dataset.cwd = s.cwd
+          resumeDatalist.appendChild(opt)
+        }
+      }
+    })
+  }
+
+  // Reset tools to all checked
+  document.querySelectorAll<HTMLInputElement>('#tools-checkboxes input[type="checkbox"]').forEach((cb) => {
+    cb.checked = true
+  })
+
+  // Collapse tools/MCP/tentacles sections and clear entries
+  for (const [toggleId, sectionId] of [
+    ['tools-toggle', 'tools-section'],
+    ['mcp-toggle', 'mcp-section'],
+    ['tentacles-toggle', 'tentacles-section'],
+  ]) {
+    document.getElementById(toggleId)?.classList.remove('expanded')
+    document.getElementById(sectionId)?.classList.remove('visible')
+  }
+  const mcpList = document.getElementById('mcp-servers-list')
+  if (mcpList) mcpList.innerHTML = ''
+  const tentaclesList = document.getElementById('tentacles-targets-list')
+  if (tentaclesList) tentaclesList.innerHTML = ''
+  const tentaclesEnabledEl = document.getElementById('tentacles-enabled') as HTMLInputElement
+  if (tentaclesEnabledEl) tentaclesEnabledEl.checked = false
+  const tentaclesHostEl = document.getElementById('tentacles-host') as HTMLInputElement
+  if (tentaclesHostEl) { tentaclesHostEl.checked = true; tentaclesHostEl.disabled = true }
+  const tentaclesAddContainerEl = document.getElementById('tentacles-add-container') as HTMLButtonElement
+  if (tentaclesAddContainerEl) tentaclesAddContainerEl.disabled = true
+  const tentaclesAddSshEl = document.getElementById('tentacles-add-ssh') as HTMLButtonElement
+  if (tentaclesAddSshEl) tentaclesAddSshEl.disabled = true
+
   modal.classList.add('visible')
 
   // Play modal open sound
@@ -589,6 +661,48 @@ function setupManagedSessions(): void {
   // Setup directory autocomplete
   if (cwdInput) {
     setupDirectoryAutocomplete(cwdInput)
+  }
+
+  // Session mode radio buttons: show/hide resume input
+  const sessionModeRadios = document.querySelectorAll<HTMLInputElement>('input[name="session-mode"]')
+  const resumeWrapper = document.getElementById('resume-input-wrapper')
+  const resumeInput = document.getElementById('session-resume-input') as HTMLInputElement
+  sessionModeRadios.forEach((radio) => {
+    radio.addEventListener('change', () => {
+      if (resumeWrapper) {
+        resumeWrapper.style.display = radio.value === 'resume' && radio.checked ? '' : 'none'
+      }
+      if (radio.value === 'resume' && radio.checked) {
+        resumeInput?.focus()
+      }
+    })
+  })
+
+  // System prompt radio buttons: show/hide textarea
+  const systemPromptRadios = document.querySelectorAll<HTMLInputElement>('input[name="system-prompt-mode"]')
+  const systemPromptTextarea = document.getElementById('session-system-prompt') as HTMLTextAreaElement
+  systemPromptRadios.forEach((radio) => {
+    radio.addEventListener('change', () => {
+      if (systemPromptTextarea) {
+        systemPromptTextarea.style.display = radio.value === 'default' ? 'none' : ''
+        if (radio.value !== 'default') systemPromptTextarea.focus()
+      }
+    })
+  })
+
+  // Resume input: auto-fill cwd when a session is selected
+  if (resumeInput && cwdInput) {
+    resumeInput.addEventListener('change', () => {
+      const resumeId = resumeInput.value.trim()
+      if (resumeId) {
+        const resumeDatalist = document.getElementById('resumable-sessions-list') as HTMLDataListElement
+        const matchingOpt = resumeDatalist?.querySelector(`option[value="${CSS.escape(resumeId)}"]`) as HTMLOptionElement | null
+        if (matchingOpt?.dataset.cwd) {
+          cwdInput.value = matchingOpt.dataset.cwd
+          cwdInput.dispatchEvent(new Event('input')) // Trigger name auto-fill
+        }
+      }
+    })
   }
 
   // Auto-populate name from directory when cwd changes
@@ -630,16 +744,101 @@ function setupManagedSessions(): void {
     const name = nameInput?.value.trim() || undefined
     const cwd = cwdInput?.value.trim() || undefined
 
-    // Read flag checkboxes
-    const continueCheck = document.getElementById('session-opt-continue') as HTMLInputElement
+    // Read session mode (radio buttons)
+    const sessionMode = (document.querySelector<HTMLInputElement>('input[name="session-mode"]:checked'))?.value ?? 'new'
     const skipPermsCheck = document.getElementById('session-opt-skip-perms') as HTMLInputElement
     const chromeCheck = document.getElementById('session-opt-chrome') as HTMLInputElement
+    const memoryCheck = document.getElementById('session-opt-memory') as HTMLInputElement
+    const systemPromptMode = (document.querySelector<HTMLInputElement>('input[name="system-prompt-mode"]:checked'))?.value ?? 'default'
+    const systemPromptTextRaw = (document.getElementById('session-system-prompt') as HTMLTextAreaElement)?.value.trim() ?? ''
+    const systemPromptText = systemPromptMode === 'replace' ? systemPromptTextRaw : (systemPromptTextRaw || undefined)
+
+    // Collect selected tools
+    const toolCheckboxes = document.querySelectorAll<HTMLInputElement>('#tools-checkboxes input[type="checkbox"]')
+    const allTools = Array.from(toolCheckboxes)
+    const checkedTools = allTools.filter((cb) => cb.checked).map((cb) => cb.value)
+    // Only send tools list if not all are checked (partial selection)
+    const tools = checkedTools.length < allTools.length ? checkedTools : undefined
+
+    // Collect MCP servers
+    const mcpEntries = document.querySelectorAll<HTMLElement>('.mcp-server-entry')
+    const mcpServers: { name: string; command: string; args?: string[] }[] = []
+    mcpEntries.forEach((entry) => {
+      const nameEl = entry.querySelector<HTMLInputElement>('.mcp-name')
+      const cmdEl = entry.querySelector<HTMLInputElement>('.mcp-command')
+      const argsEl = entry.querySelector<HTMLInputElement>('.mcp-args')
+      const name = nameEl?.value.trim()
+      const command = cmdEl?.value.trim()
+      if (name && command) {
+        const argsStr = argsEl?.value.trim()
+        const args = argsStr ? argsStr.split(/\s+/) : undefined
+        mcpServers.push({ name, command, args })
+      }
+    })
+
+    // Collect tentacles config
+    const tentaclesEnabledCheck = (document.getElementById('tentacles-enabled') as HTMLInputElement)?.checked
+    const tentaclesHostCheck = (document.getElementById('tentacles-host') as HTMLInputElement)?.checked
+    type TentTarget = { name: string; targetType: string; params?: Record<string, unknown> }
+    let tentacles: { enabled: boolean; targets: TentTarget[] } | undefined
+    if (tentaclesEnabledCheck) {
+      const targets: TentTarget[] = []
+      // Host target (if checked)
+      if (tentaclesHostCheck) {
+        targets.push({ name: 'host', targetType: 'host' })
+      }
+      // Dynamic targets (container / ssh)
+      const targetEntries = document.querySelectorAll<HTMLElement>('.tentacles-target-entry')
+      targetEntries.forEach((entry) => {
+        const name = entry.querySelector<HTMLInputElement>('.tentacles-target-name')?.value.trim()
+        if (!name) return
+        const tType = entry.dataset.targetType
+        if (tType === 'container') {
+          const mode = entry.dataset.containerMode || 'container'
+          const value = entry.querySelector<HTMLInputElement>('.tentacles-container-value')?.value.trim()
+          if (!value) return
+          const params: Record<string, unknown> = { mode }
+          if (mode === 'container') params.container = value
+          if (mode === 'image') params.image = value
+          if (mode === 'dockerfile') {
+            params.dockerfile = value
+            const editable = entry.querySelector<HTMLInputElement>('.tentacles-editable-checkbox')?.checked
+            if (editable) params.editable = true
+          }
+          // Collect volumes for image/dockerfile
+          if (mode === 'image' || mode === 'dockerfile') {
+            const volumes: string[] = []
+            entry.querySelectorAll('.tentacles-volume-row').forEach((row) => {
+              const hostPath = row.querySelector<HTMLInputElement>('.tentacles-vol-host')?.value.trim()
+              const containerPath = row.querySelector<HTMLInputElement>('.tentacles-vol-container')?.value.trim()
+              if (hostPath && containerPath) volumes.push(`${hostPath}:${containerPath}`)
+            })
+            if (volumes.length > 0) params.volumes = volumes
+          }
+          targets.push({ name, targetType: 'container', params })
+        } else if (tType === 'ssh') {
+          const host = entry.querySelector<HTMLInputElement>('.tentacles-ssh-host')?.value.trim()
+          if (host) targets.push({ name, targetType: 'ssh', params: { host } })
+        }
+      })
+      tentacles = { enabled: true, targets }
+    }
 
     const flags: SessionFlags = {
-      continue: continueCheck?.checked ?? true,
+      continue: sessionMode === 'continue',
       skipPermissions: skipPermsCheck?.checked ?? true,
       chrome: chromeCheck?.checked ?? false,
+      memory: memoryCheck?.checked ?? true,
+      systemPromptMode: systemPromptMode !== 'default' ? systemPromptMode : undefined,
+      systemPromptText: systemPromptMode !== 'default' ? systemPromptText : undefined,
+      tools,
+      mcpServers: mcpServers.length > 0 ? mcpServers : undefined,
+      tentacles,
     }
+
+    // Resume ID only when resume mode is selected
+    const resumeInput = document.getElementById('session-resume-input') as HTMLInputElement
+    const resumeId = sessionMode === 'resume' ? (resumeInput?.value.trim() || undefined) : undefined
 
     // Capture hint before closing modal (closeModal clears it)
     const hintPosition = currentModalHint
@@ -667,7 +866,7 @@ function setupManagedSessions(): void {
     soundManager.play('modal_confirm')
 
     closeModal()
-    createManagedSession(name, cwd, flags, hintPosition ?? undefined, pendingId)
+    createManagedSession(name, cwd, flags, hintPosition ?? undefined, pendingId, resumeId)
   }
 
   const handleCancel = (): void => {
@@ -716,6 +915,177 @@ function setupManagedSessions(): void {
   }
   nameInput?.addEventListener('keydown', handleEnter)
   cwdInput?.addEventListener('keydown', handleEnter)
+
+  // Collapsible sections (Tools, MCP, Tentacles)
+  for (const [toggleId, sectionId] of [
+    ['tools-toggle', 'tools-section'],
+    ['mcp-toggle', 'mcp-section'],
+    ['tentacles-toggle', 'tentacles-section'],
+  ]) {
+    const toggle = document.getElementById(toggleId)
+    const section = document.getElementById(sectionId)
+    if (toggle && section) {
+      toggle.addEventListener('click', () => {
+        toggle.classList.toggle('expanded')
+        section.classList.toggle('visible')
+      })
+    }
+  }
+
+  // Tools select all/none
+  const toolsContainer = document.getElementById('tools-checkboxes')
+  document.getElementById('tools-select-all')?.addEventListener('click', () => {
+    toolsContainer?.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((cb) => {
+      cb.checked = true
+    })
+  })
+  document.getElementById('tools-select-none')?.addEventListener('click', () => {
+    toolsContainer?.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((cb) => {
+      cb.checked = false
+    })
+  })
+
+  // MCP server add/remove
+  const mcpList = document.getElementById('mcp-servers-list')
+  document.getElementById('mcp-add-btn')?.addEventListener('click', () => {
+    if (!mcpList) return
+    const entry = document.createElement('div')
+    entry.className = 'mcp-server-entry'
+    entry.innerHTML = `
+      <div class="mcp-server-row">
+        <input type="text" class="mcp-name" placeholder="server name" />
+        <button type="button" class="mcp-server-remove" title="Remove">&times;</button>
+      </div>
+      <input type="text" class="mcp-command" placeholder="command (e.g. npx, uvx, node)" />
+      <input type="text" class="mcp-args" placeholder="args (space-separated)" />
+    `
+    entry.querySelector('.mcp-server-remove')?.addEventListener('click', () => entry.remove())
+    mcpList.appendChild(entry)
+    entry.querySelector<HTMLInputElement>('.mcp-name')?.focus()
+  })
+
+  // Tentacles: enable checkbox toggles host + add buttons
+  const tentaclesEnabled = document.getElementById('tentacles-enabled') as HTMLInputElement
+  const tentaclesHost = document.getElementById('tentacles-host') as HTMLInputElement
+  const tentaclesAddContainer = document.getElementById('tentacles-add-container') as HTMLButtonElement
+  const tentaclesAddSsh = document.getElementById('tentacles-add-ssh') as HTMLButtonElement
+  const tentaclesList = document.getElementById('tentacles-targets-list')
+
+  tentaclesEnabled?.addEventListener('change', () => {
+    const on = tentaclesEnabled.checked
+    if (tentaclesHost) {
+      tentaclesHost.disabled = !on
+      tentaclesHost.checked = on
+    }
+    if (tentaclesAddContainer) tentaclesAddContainer.disabled = !on
+    if (tentaclesAddSsh) tentaclesAddSsh.disabled = !on
+  })
+
+  // Helper: add a volume mapping row to a container entry
+  function addVolumeRow(container: HTMLElement): void {
+    const row = document.createElement('div')
+    row.className = 'tentacles-volume-row'
+    row.innerHTML = `
+      <input type="text" class="tentacles-vol-host" placeholder="/host/path" />
+      <span class="tentacles-vol-arrow">:</span>
+      <input type="text" class="tentacles-vol-container" placeholder="/container/path" />
+      <button type="button" class="mcp-server-remove" title="Remove">&times;</button>
+    `
+    row.querySelector('.mcp-server-remove')?.addEventListener('click', () => row.remove())
+    container.appendChild(row)
+  }
+
+  // Add container target
+  tentaclesAddContainer?.addEventListener('click', () => {
+    if (!tentaclesList) return
+    const entry = document.createElement('div')
+    entry.className = 'mcp-server-entry tentacles-target-entry'
+    entry.dataset.targetType = 'container'
+    entry.innerHTML = `
+      <div class="mcp-server-row">
+        <input type="text" class="tentacles-target-name" placeholder="target name" />
+        <button type="button" class="mcp-server-remove" title="Remove">&times;</button>
+      </div>
+      <div class="tentacles-container-mode">
+        <label class="tentacles-radio"><input type="radio" name="" value="container" checked /> Existing container</label>
+        <label class="tentacles-radio"><input type="radio" name="" value="image" /> From image</label>
+        <label class="tentacles-radio"><input type="radio" name="" value="dockerfile" /> From Dockerfile</label>
+      </div>
+      <div class="tentacles-container-fields">
+        <input type="text" class="tentacles-container-value" placeholder="container name" />
+      </div>
+      <div class="tentacles-editable" style="display:none;">
+        <label class="tentacles-radio"><input type="checkbox" class="tentacles-editable-checkbox" /> Allow agent to modify Dockerfile</label>
+      </div>
+      <div class="tentacles-volumes" style="display:none;">
+        <div class="tentacles-volumes-header">
+          <span class="field-hint" style="margin:0;">Volume mounts</span>
+          <button type="button" class="tools-action-btn tentacles-add-volume">+ Volume</button>
+        </div>
+        <div class="tentacles-volumes-list"></div>
+      </div>
+    `
+    // Unique radio group name
+    const radioName = `container-mode-${Date.now()}`
+    entry.querySelectorAll<HTMLInputElement>('.tentacles-container-mode input[type="radio"]').forEach((r) => {
+      r.name = radioName
+    })
+
+    const valueInput = entry.querySelector<HTMLInputElement>('.tentacles-container-value')!
+    const volumesSection = entry.querySelector<HTMLElement>('.tentacles-volumes')!
+    const volumesList = entry.querySelector<HTMLElement>('.tentacles-volumes-list')!
+    const editableSection = entry.querySelector<HTMLElement>('.tentacles-editable')!
+
+    // Mode switching
+    entry.querySelectorAll<HTMLInputElement>('.tentacles-container-mode input[type="radio"]').forEach((radio) => {
+      radio.addEventListener('change', () => {
+        const mode = radio.value
+        entry.dataset.containerMode = mode
+        switch (mode) {
+          case 'container':
+            valueInput.placeholder = 'container name'
+            volumesSection.style.display = 'none'
+            editableSection.style.display = 'none'
+            break
+          case 'image':
+            valueInput.placeholder = 'image (e.g. ubuntu:24.04)'
+            volumesSection.style.display = ''
+            editableSection.style.display = 'none'
+            break
+          case 'dockerfile':
+            valueInput.placeholder = 'path to Dockerfile'
+            volumesSection.style.display = ''
+            editableSection.style.display = ''
+            break
+        }
+      })
+    })
+    entry.dataset.containerMode = 'container'
+
+    entry.querySelector('.tentacles-add-volume')?.addEventListener('click', () => addVolumeRow(volumesList))
+    entry.querySelector('.mcp-server-remove')?.addEventListener('click', () => entry.remove())
+    tentaclesList.appendChild(entry)
+    entry.querySelector<HTMLInputElement>('.tentacles-target-name')?.focus()
+  })
+
+  // Add SSH target
+  tentaclesAddSsh?.addEventListener('click', () => {
+    if (!tentaclesList) return
+    const entry = document.createElement('div')
+    entry.className = 'mcp-server-entry tentacles-target-entry'
+    entry.dataset.targetType = 'ssh'
+    entry.innerHTML = `
+      <div class="mcp-server-row">
+        <input type="text" class="tentacles-target-name" placeholder="target name" />
+        <span class="tentacles-type-badge">SSH</span>
+        <button type="button" class="mcp-server-remove" title="Remove">&times;</button>
+      </div>
+      <input type="text" class="tentacles-ssh-host" placeholder="user@host" />
+    `
+    entry.querySelector('.mcp-server-remove')?.addEventListener('click', () => entry.remove())
+    tentaclesList.appendChild(entry)
+    entry.querySelector<HTMLInputElement>('.tentacles-target-name')?.focus()
+  })
 
   // "All Sessions" click handler
   const allItem = document.querySelector('.session-item.all-sessions')
@@ -1081,7 +1451,7 @@ function setupClickToPrompt(): void {
         }
 
         // Select the managed session if linked, otherwise clear selection
-        const managed = state.managedSessions.find(s => s.claudeSessionId === sessionId)
+        const managed = state.managedSessions.find(s => s.claudeSessionId === sessionId || s.id === sessionId)
         if (managed) {
           selectManagedSession(managed.id)
           state.attentionSystem?.remove(managed.id)
@@ -2695,24 +3065,43 @@ function init() {
     for (const session of sessions) {
       if (session.claudeSessionId) {
         claudeToManagedLink.set(session.claudeSessionId, session.id)
+      }
 
-        // Proactively create zone if it doesn't exist yet
-        // This handles sessions that have no recent events in history
-        if (state.scene && !state.scene.zones.has(session.claudeSessionId)) {
-          // Use saved position if available
+      // Create zone for any managed session that doesn't have one yet.
+      // Use claudeSessionId as zone key if linked, otherwise use managed session ID.
+      const zoneKey = session.claudeSessionId || session.id
+      {
+        if (state.scene && !state.scene.zones.has(zoneKey)) {
+          // Use saved position if available, then pending hints, then default
           let hintPosition: { x: number; z: number } | undefined
           if (session.zonePosition) {
             const cartesian = state.scene.hexGrid.axialToCartesian(session.zonePosition)
             hintPosition = { x: cartesian.x, z: cartesian.z }
             console.log(`Restoring zone for "${session.name}" at saved position`, session.zonePosition)
+          } else if (pendingZoneHints.has(session.name)) {
+            hintPosition = pendingZoneHints.get(session.name)
+            pendingZoneHints.delete(session.name)
+            console.log(`Using pending hint position for "${session.name}"`)
           } else {
-            console.log(`Creating zone for session "${session.name}" (no recent events in history)`)
+            console.log(`Creating zone for session "${session.name}" (no saved or pending position)`)
           }
-          const zone = state.scene.createZone(session.claudeSessionId, { hintPosition })
+
+          // Clean up pending zone if one exists for this session
+          const pendingZoneId = pendingZonesToCleanup.get(session.name)
+          if (pendingZoneId) {
+            state.scene.removePendingZone(pendingZoneId)
+            pendingZonesToCleanup.delete(session.name)
+            const timeoutId = pendingZoneTimeouts.get(pendingZoneId)
+            if (timeoutId) {
+              clearTimeout(timeoutId)
+              pendingZoneTimeouts.delete(pendingZoneId)
+            }
+          }
+          const zone = state.scene.createZone(zoneKey, { hintPosition })
 
           // Play zone creation sound
           if (state.soundEnabled) {
-            soundManager.play('zone_create', { zoneId: session.claudeSessionId })
+            soundManager.play('zone_create', { zoneId: zoneKey })
           }
 
           // Create Claude entity for this zone
@@ -2738,12 +3127,31 @@ function init() {
               activeSubagents: 0,
             },
           }
-          state.sessions.set(session.claudeSessionId, sessionState)
+          state.sessions.set(zoneKey, sessionState)
 
           // Update zone label with session name
           const keybindIndex = sessions.indexOf(session)
           const keybind = keybindIndex >= 0 ? getSessionKeybind(keybindIndex) : undefined
-          state.scene.updateZoneLabel(session.claudeSessionId, session.name, keybind)
+          state.scene.updateZoneLabel(zoneKey, session.name, keybind)
+
+          // Save zone position to server if not already saved
+          if (!session.zonePosition) {
+            const hexPos = state.scene.getZoneHexPosition(zoneKey)
+            if (hexPos) {
+              saveZonePosition(session.id, hexPos)
+            }
+          }
+        }
+
+        // Restore pending permission prompts (e.g., after client reload)
+        if (session.pendingPermission && session.status === 'waiting') {
+          showPermissionModal(
+            session.id,
+            session.pendingPermission.id,
+            session.pendingPermission.tool,
+            session.pendingPermission.context,
+            session.pendingPermission.options
+          )
         }
 
         // Update zone floor status based on session status
@@ -2753,19 +3161,19 @@ function init() {
             : session.status === 'waiting' ? 'waiting'
             : session.status === 'offline' ? 'offline'
             : 'idle'
-          state.scene.setZoneStatus(session.claudeSessionId, zoneStatus)
+          state.scene.setZoneStatus(zoneKey, zoneStatus)
         }
       }
     }
 
     // Clean up orphaned zones (zones not linked to any managed session)
     if (state.scene) {
-      const activeClaudeIds = new Set(
-        sessions.map(s => s.claudeSessionId).filter(Boolean)
+      const activeZoneKeys = new Set(
+        sessions.map(s => s.claudeSessionId || s.id)
       )
       const zonesToDelete: string[] = []
       for (const [zoneId] of state.scene.zones) {
-        if (!activeClaudeIds.has(zoneId)) {
+        if (!activeZoneKeys.has(zoneId)) {
           zonesToDelete.push(zoneId)
         }
       }
@@ -2844,13 +3252,14 @@ function init() {
   // Handle permission prompts and text tiles
   state.client.onRawMessage((message) => {
     if (message.type === 'permission_prompt') {
-      const { sessionId, tool, context, options } = message.payload as {
+      const { sessionId, permissionId, tool, context, options } = message.payload as {
         sessionId: string
+        permissionId: string
         tool: string
         context: string
         options: Array<{ number: string; label: string }>
       }
-      showPermissionModal(sessionId, tool, context, options)
+      showPermissionModal(sessionId, permissionId, tool, context, options)
     } else if (message.type === 'permission_resolved') {
       hidePermissionModal()
     } else if (message.type === 'text_tiles') {
@@ -2931,18 +3340,31 @@ function init() {
     attentionSystem: state.attentionSystem,
   })
 
-  // Setup permission modal (for tool permissions)
+  // Setup permission prompt (inline in feed)
   setupPermissionModal({
     scene: state.scene,
     soundEnabled: state.soundEnabled,
     apiUrl: API_URL,
     attentionSystem: state.attentionSystem,
     getManagedSessions: () => state.managedSessions,
+    feedManager: state.feedManager,
+    getSessionColor: (managedId: string) => {
+      const managed = state.managedSessions.find(s => s.id === managedId)
+      if (managed?.claudeSessionId) {
+        return state.sessions.get(managed.claudeSessionId)?.color
+      }
+      return undefined
+    },
+    getClaudeSessionId: (managedId: string) => {
+      const managed = state.managedSessions.find(s => s.id === managedId)
+      return managed?.claudeSessionId ?? undefined
+    },
   })
 
   // Setup zone info modal (for session details)
   setupZoneInfoModal({
     soundEnabled: state.soundEnabled,
+    sessionAPI,
   })
 
   // Setup text label modal (for hex text labels)

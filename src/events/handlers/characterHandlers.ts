@@ -17,7 +17,7 @@ import type { PreToolUseEvent, PostToolUseEvent, StopEvent, UserPromptSubmitEven
 export function registerCharacterHandlers(): void {
   // Move character to station when tool starts
   eventBus.on('pre_tool_use', (event: PreToolUseEvent, ctx) => {
-    if (!ctx.session) return
+    if (ctx.isHistory || !ctx.session) return
 
     const station = getStationForTool(event.tool)
 
@@ -47,7 +47,7 @@ export function registerCharacterHandlers(): void {
 
   // Set idle state when tool completes (if not walking)
   eventBus.on('post_tool_use', (_event: PostToolUseEvent, ctx) => {
-    if (!ctx.session) return
+    if (ctx.isHistory || !ctx.session) return
 
     // Only set idle if character isn't walking
     if (ctx.session.claude.state !== 'walking') {
@@ -57,7 +57,7 @@ export function registerCharacterHandlers(): void {
 
   // Move character back to center when stopped
   eventBus.on('stop', (event: StopEvent, ctx) => {
-    if (!ctx.session || !ctx.scene) return
+    if (ctx.isHistory || !ctx.session || !ctx.scene) return
 
     // Move to zone center
     const centerStation = ctx.session.zone.stations.get('center')
@@ -71,7 +71,7 @@ export function registerCharacterHandlers(): void {
 
   // Set thinking state when user submits prompt
   eventBus.on('user_prompt_submit', (_event: UserPromptSubmitEvent, ctx) => {
-    if (!ctx.session) return
+    if (ctx.isHistory || !ctx.session) return
     ctx.session.claude.setState('thinking')
   })
 }

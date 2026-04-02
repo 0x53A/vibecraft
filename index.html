@@ -124,7 +124,11 @@
 
         <!-- Terminal output panel (hidden by default) -->
         <div id="terminal-panel" class="hidden">
-          <div id="terminal-output"></div>
+          <div id="terminal-panel-header">
+            <span id="terminal-panel-title">Terminal</span>
+            <button id="terminal-panel-close" title="Close terminal">&times;</button>
+          </div>
+          <div id="terminal-container"></div>
         </div>
 
         <div id="activity-feed-wrapper">
@@ -232,6 +236,15 @@
               <span class="checkbox-label">Replace</span>
             </label>
           </div>
+          <div id="template-picker" style="display:none; margin-top: 8px;">
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <select id="template-select" class="modal-select">
+                <option value="">(none - raw text)</option>
+              </select>
+              <button type="button" class="tools-action-btn" id="template-edit-btn" title="Edit selected template">Edit</button>
+              <button type="button" class="tools-action-btn" id="template-new-btn" title="Create new template">+ New</button>
+            </div>
+          </div>
           <textarea id="session-system-prompt" class="modal-textarea" placeholder="System prompt text..." rows="3" style="display:none; margin-top: 8px;"></textarea>
         </div>
 
@@ -296,6 +309,25 @@
         <div class="modal-actions">
           <button type="button" class="modal-btn modal-btn-cancel" id="modal-cancel">✕ Cancel</button>
           <button type="button" class="modal-btn modal-btn-create" id="modal-create">+ Create</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Template Editor Modal -->
+    <div id="template-editor-modal">
+      <div class="modal-content modal-content-wide">
+        <div class="modal-header">
+          <h3>System Prompt Template</h3>
+        </div>
+        <div class="modal-field">
+          <label for="template-name-input">Template Name</label>
+          <input type="text" id="template-name-input" placeholder="e.g. default, code-review, minimal" />
+        </div>
+        <div id="template-sections-container"></div>
+        <div class="modal-actions">
+          <button type="button" class="modal-btn modal-btn-cancel" id="template-editor-cancel">Cancel</button>
+          <button type="button" class="modal-btn modal-btn-danger" id="template-editor-delete" style="display:none">Delete</button>
+          <button type="button" class="modal-btn modal-btn-create" id="template-editor-save">Save Template</button>
         </div>
       </div>
     </div>
@@ -551,5 +583,10 @@
     <div id="toast-container"></div>
 
     <script type="module" src="/src/main.ts"></script>
+    <!-- Terminal emulator WASM web component -->
+    <script type="module">
+      import init from './terminal-component/pkg/vibecraft_terminal.js';
+      init().catch(e => console.warn('Terminal WASM init failed:', e));
+    </script>
   </body>
 </html>

@@ -35,7 +35,7 @@ function getSpatialOptions(ctx: { session: { id: string } | null }): SoundPlayOp
 export function registerSoundHandlers(): void {
   // Tool start sounds (with special handling for git commit)
   eventBus.on('pre_tool_use', (event: PreToolUseEvent, ctx) => {
-    if (!ctx.soundEnabled) return
+    if (ctx.isHistory || !ctx.soundEnabled) return
     const spatial = getSpatialOptions(ctx)
 
     // Special sound for git commit (global, no spatial)
@@ -52,7 +52,7 @@ export function registerSoundHandlers(): void {
 
   // Subagent spawn sound (Task tool start)
   eventBus.on('pre_tool_use', (event: PreToolUseEvent, ctx) => {
-    if (!ctx.soundEnabled) return
+    if (ctx.isHistory || !ctx.soundEnabled) return
     if (event.tool === 'Task') {
       const spatial = getSpatialOptions(ctx)
       soundManager.play('spawn', spatial)
@@ -61,14 +61,14 @@ export function registerSoundHandlers(): void {
 
   // Tool completion sounds (success/error)
   eventBus.on('post_tool_use', (event: PostToolUseEvent, ctx) => {
-    if (!ctx.soundEnabled) return
+    if (ctx.isHistory || !ctx.soundEnabled) return
     const spatial = getSpatialOptions(ctx)
     soundManager.playResult(event.success, spatial)
   })
 
   // Subagent despawn sound
   eventBus.on('post_tool_use', (event: PostToolUseEvent, ctx) => {
-    if (!ctx.soundEnabled) return
+    if (ctx.isHistory || !ctx.soundEnabled) return
     if (event.tool === 'Task') {
       const spatial = getSpatialOptions(ctx)
       soundManager.play('despawn', spatial)
@@ -77,21 +77,21 @@ export function registerSoundHandlers(): void {
 
   // Stop/completion sound
   eventBus.on('stop', (_event, ctx) => {
-    if (!ctx.soundEnabled) return
+    if (ctx.isHistory || !ctx.soundEnabled) return
     const spatial = getSpatialOptions(ctx)
     soundManager.play('stop', spatial)
   })
 
   // Prompt received sound
   eventBus.on('user_prompt_submit', (_event, ctx) => {
-    if (!ctx.soundEnabled) return
+    if (ctx.isHistory || !ctx.soundEnabled) return
     const spatial = getSpatialOptions(ctx)
     soundManager.play('prompt', spatial)
   })
 
   // Notification sound (global, no spatial)
   eventBus.on('notification', (_event, ctx) => {
-    if (!ctx.soundEnabled) return
+    if (ctx.isHistory || !ctx.soundEnabled) return
     soundManager.play('notification')  // Global sound, no spatial
   })
 }

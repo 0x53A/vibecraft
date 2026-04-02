@@ -1,15 +1,17 @@
 use std::time::Duration;
 
-use axum::extract::{Json, Path, Query, State};
+use axum::extract::ws::{Message, WebSocket};
+use axum::extract::{Json, Path, Query, State, WebSocketUpgrade};
 use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Json as JsonResponse};
 use axum::routing::{delete, get, post, put};
 use axum::Router;
+use futures_util::{SinkExt, StreamExt};
 use ractor_wormhole::util::ActorRef_Ask;
 use serde::Deserialize;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::actors::events::EventsMsg;
 use crate::actors::sessions_supervisor::SessionsMsg;
@@ -17,7 +19,7 @@ use crate::actors::Actors;
 use crate::hook::RawHookEvent;
 use crate::types::{
     ClaudeEvent, CreateSessionRequest, CreateTextTileRequest, LinkSessionRequest, PromptRequest,
-    SessionPromptRequest, UpdateSessionRequest, UpdateTextTileRequest,
+    SaveTemplateRequest, SessionPromptRequest, UpdateSessionRequest, UpdateTextTileRequest,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -75,7 +77,12 @@ pub fn router(actors: Actors) -> Router {
         .route("/sessions/{id}/prompt", post(session_prompt))
         .route("/sessions/{id}/cancel", post(session_cancel))
         .route("/sessions/{id}/permission", post(session_permission))
-        .route("/sessions/{id}/restart", post(session_restart))
+        .route("/sessions/{id}/spawn-flags", get(get_session_spawn_flags))
+        .route("/sessions/{id}/tmux-output", get(session_tmux_output))
+        .route(
+            "/sessions/{id}/terminal-stream",
+            get(session_terminal_stream),
+        )
         .route("/sessions/{id}/link", post(session_link))
         .route("/sessions/{id}/targets", get(list_targets).post(add_target))
         .route("/sessions/{id}/targets/{name}", delete(remove_target))
@@ -86,6 +93,8 @@ pub fn router(actors: Actors) -> Router {
         .route("/docker/images", get(list_docker_images))
         .route("/tiles", get(list_tiles).post(create_tile))
         .route("/tiles/{id}", put(update_tile).delete(delete_tile))
+        .route("/templates", get(list_templates).post(save_template))
+        .route("/templates/{name}", delete(delete_template))
         .route("/ws", get(crate::websocket::handle_ws_upgrade))
         .fallback_service(ServeDir::new("dist").fallback(ServeDir::new("dist")))
         .layer(cors)
@@ -335,6 +344,60 @@ async fn get_tmux_output(State(actors): State<Actors>) -> impl IntoResponse {
             "capture-pane",
             "-t",
             &actors.config.tmux_session,
+            "-e", // preserve escape sequences (colors, styles)
+            "-p",
+            "-S",
+            "-100",
+        ],
+        &actors.config.exec_path,
+    )
+    .await
+    {
+        Ok(output) if output.status.success() => {
+            let text = String::from_utf8_lossy(&output.stdout).to_string();
+            JsonResponse(serde_json::json!({ "ok": true, "output": text }))
+        }
+        Ok(output) => {
+            let err = String::from_utf8_lossy(&output.stderr);
+            JsonResponse(serde_json::json!({ "ok": false, "error": err.to_string(), "output": "" }))
+        }
+        Err(e) => {
+            JsonResponse(serde_json::json!({ "ok": false, "error": e.to_string(), "output": "" }))
+        }
+    }
+}
+
+async fn session_tmux_output(
+    State(actors): State<Actors>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    // Look up the managed session to get its tmux session name
+    let session = actors
+        .sessions
+        .ask(|reply| SessionsMsg::Get(id, reply), ASK_TIMEOUT)
+        .await
+        .ok()
+        .flatten();
+
+    let Some(session) = session else {
+        return JsonResponse(serde_json::json!({
+            "ok": false, "error": "Session not found", "output": ""
+        }));
+    };
+
+    if !is_valid_tmux_session(&session.tmux_session) {
+        return JsonResponse(serde_json::json!({
+            "ok": false, "error": "Invalid tmux session name", "output": ""
+        }));
+    }
+
+    match crate::tmux::exec_with_path(
+        "tmux",
+        &[
+            "capture-pane",
+            "-t",
+            &session.tmux_session,
+            "-e", // preserve escape sequences (colors, styles)
             "-p",
             "-S",
             "-100",
@@ -659,27 +722,31 @@ async fn session_permission(
     }
 }
 
-async fn session_restart(
+async fn get_session_spawn_flags(
     State(actors): State<Actors>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let result = actors
+    let session = actors
         .sessions
-        .ask(|reply| SessionsMsg::SessionRestart(id, reply), ASK_TIMEOUT)
-        .await;
+        .ask(|reply| SessionsMsg::Get(id, reply), ASK_TIMEOUT)
+        .await
+        .ok()
+        .flatten();
 
-    match result {
-        Ok(Ok(session)) => (
+    match session {
+        Some(session) => (
             StatusCode::OK,
-            JsonResponse(serde_json::json!({ "ok": true, "session": session })),
+            JsonResponse(serde_json::json!({
+                "ok": true,
+                "spawnFlags": session.spawn_flags,
+                "name": session.name,
+                "cwd": session.cwd,
+                "claudeSessionId": session.claude_session_id,
+            })),
         ),
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            JsonResponse(serde_json::json!({ "ok": false, "error": e })),
-        ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            JsonResponse(serde_json::json!({ "ok": false, "error": e.to_string() })),
+        None => (
+            StatusCode::NOT_FOUND,
+            JsonResponse(serde_json::json!({ "ok": false, "error": "Session not found" })),
         ),
     }
 }
@@ -837,6 +904,71 @@ async fn delete_tile(
     }
 }
 
+// ── Templates ────────────────────────────────────────────────────────────────
+
+async fn list_templates(State(actors): State<Actors>) -> impl IntoResponse {
+    let templates = actors
+        .sessions
+        .ask(SessionsMsg::ListTemplates, ASK_TIMEOUT)
+        .await
+        .unwrap_or_default();
+    JsonResponse(serde_json::json!({ "ok": true, "templates": templates }))
+}
+
+async fn save_template(
+    State(actors): State<Actors>,
+    Json(req): Json<SaveTemplateRequest>,
+) -> impl IntoResponse {
+    if req.name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            JsonResponse(serde_json::json!({ "ok": false, "error": "Missing template name" })),
+        );
+    }
+
+    let template = actors
+        .sessions
+        .ask(|reply| SessionsMsg::SaveTemplate(req, reply), ASK_TIMEOUT)
+        .await;
+
+    match template {
+        Ok(t) => (
+            StatusCode::OK,
+            JsonResponse(serde_json::json!({ "ok": true, "template": t })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            JsonResponse(serde_json::json!({ "ok": false, "error": e.to_string() })),
+        ),
+    }
+}
+
+async fn delete_template(
+    State(actors): State<Actors>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let found = actors
+        .sessions
+        .ask(
+            |reply| SessionsMsg::DeleteTemplate(name, reply),
+            ASK_TIMEOUT,
+        )
+        .await
+        .unwrap_or(false);
+
+    if found {
+        (
+            StatusCode::OK,
+            JsonResponse(serde_json::json!({ "ok": true })),
+        )
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            JsonResponse(serde_json::json!({ "ok": false, "error": "Template not found" })),
+        )
+    }
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn gethostname() -> String {
@@ -980,6 +1112,235 @@ async fn list_docker_images() -> impl IntoResponse {
             StatusCode::OK,
             JsonResponse(serde_json::json!({ "ok": true, "images": [], "warning": "docker not found" })),
         ),
+    }
+}
+
+// ── Terminal stream (WebSocket) ─────────────────────────────────────────────
+
+async fn session_terminal_stream(
+    State(actors): State<Actors>,
+    Path(id): Path<String>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    // Validate session exists
+    let session = actors
+        .sessions
+        .ask(|reply| SessionsMsg::Get(id.clone(), reply), ASK_TIMEOUT)
+        .await
+        .ok()
+        .flatten();
+
+    let Some(session) = session else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    if !is_valid_tmux_session(&session.tmux_session) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    let tmux_session = session.tmux_session.clone();
+    let exec_path = actors.config.exec_path.clone();
+
+    ws.on_upgrade(move |socket| {
+        handle_terminal_stream(socket, tmux_session, exec_path)
+    })
+    .into_response()
+}
+
+/// Terminal stream message from the browser.
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum TerminalClientMessage {
+    #[serde(rename = "input")]
+    Input { data: String },
+    #[serde(rename = "resize")]
+    Resize { rows: u16, cols: u16 },
+}
+
+async fn handle_terminal_stream(socket: WebSocket, tmux_session: String, exec_path: String) {
+    info!("Terminal stream connected for tmux session: {tmux_session}");
+
+    let (mut sender, mut receiver) = socket.split();
+
+    // Phase 1: Wait for client's resize message before starting captures.
+    loop {
+        match receiver.next().await {
+            Some(Ok(Message::Text(text))) => {
+                if let Ok(TerminalClientMessage::Resize { rows, cols }) =
+                    serde_json::from_str(&text)
+                {
+                    resize_tmux_pane(&tmux_session, &exec_path, rows, cols).await;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    break;
+                }
+            }
+            Some(Ok(Message::Close(_))) | None => return,
+            _ => {}
+        }
+    }
+
+    // Phase 2: Poll capture-pane and send snapshots
+    let tmux_for_poll = tmux_session.clone();
+    let exec_for_poll = exec_path.clone();
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let poll_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(200));
+        let mut last_hash: u64 = 0;
+
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {},
+                _ = &mut cancel_rx => break,
+            }
+
+            if let Some(data) = capture_pane_raw(&tmux_for_poll, &exec_for_poll).await {
+                let hash = {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    data.hash(&mut h);
+                    h.finish()
+                };
+
+                if hash != last_hash {
+                    last_hash = hash;
+                    if sender
+                        .send(Message::Binary(data.into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // Handle incoming messages (input, resize)
+    while let Some(Ok(msg)) = receiver.next().await {
+        match msg {
+            Message::Text(text) => {
+                if let Ok(client_msg) = serde_json::from_str::<TerminalClientMessage>(&text) {
+                    match client_msg {
+                        TerminalClientMessage::Input { data } => {
+                            let hex: Vec<String> = data
+                                .as_bytes()
+                                .iter()
+                                .map(|b| format!("{:02X}", b))
+                                .collect();
+                            let mut args = vec![
+                                "send-keys".to_string(),
+                                "-t".to_string(),
+                                tmux_session.clone(),
+                                "-H".to_string(),
+                            ];
+                            args.extend(hex);
+                            let arg_refs: Vec<&str> =
+                                args.iter().map(|s| s.as_str()).collect();
+                            let _ = crate::tmux::exec_with_path(
+                                "tmux",
+                                &arg_refs,
+                                &exec_path,
+                            )
+                            .await;
+                        }
+                        TerminalClientMessage::Resize { rows, cols } => {
+                            resize_tmux_pane(&tmux_session, &exec_path, rows, cols).await;
+                        }
+                    }
+                }
+            }
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+
+    let _ = cancel_tx.send(());
+    poll_task.abort();
+    info!("Terminal stream disconnected for tmux session: {tmux_session}");
+}
+
+/// Resize a tmux pane to match the browser terminal dimensions.
+async fn resize_tmux_pane(tmux_session: &str, exec_path: &str, rows: u16, cols: u16) {
+    // Allow manual window sizing (overrides client-size constraints)
+    let _ = crate::tmux::exec_with_path(
+        "tmux",
+        &["set-option", "-t", tmux_session, "window-size", "manual"],
+        exec_path,
+    )
+    .await;
+
+    // Detach any other clients that constrain the window size
+    let _ = crate::tmux::exec_with_path(
+        "tmux",
+        &["set-option", "-t", tmux_session, "aggressive-resize", "on"],
+        exec_path,
+    )
+    .await;
+
+    // Resize the window (which resizes the pane in a single-pane layout)
+    let result = crate::tmux::exec_with_path(
+        "tmux",
+        &[
+            "resize-window",
+            "-t",
+            tmux_session,
+            "-x",
+            &cols.to_string(),
+            "-y",
+            &rows.to_string(),
+        ],
+        exec_path,
+    )
+    .await;
+
+    match result {
+        Ok(output) if output.status.success() => {
+            info!("Resized tmux {tmux_session} to {cols}x{rows}");
+        }
+        Ok(output) => {
+            warn!(
+                "resize-window failed for {}: {}",
+                tmux_session,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Err(e) => {
+            warn!("resize-window exec error: {}", e);
+        }
+    }
+}
+
+/// Capture raw pane content with escape sequences preserved.
+/// Only captures the visible pane area (no scrollback).
+async fn capture_pane_raw(tmux_session: &str, exec_path: &str) -> Option<Vec<u8>> {
+    let result = crate::tmux::exec_with_path(
+        "tmux",
+        &[
+            "capture-pane",
+            "-t",
+            tmux_session,
+            "-e", // preserve escape sequences
+            "-p", // output to stdout
+        ],
+        exec_path,
+    )
+    .await;
+
+    match result {
+        Ok(output) if output.status.success() => Some(output.stdout),
+        Ok(output) => {
+            warn!(
+                "capture-pane failed for {}: {}",
+                tmux_session,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            None
+        }
+        Err(e) => {
+            warn!("capture-pane exec error for {}: {}", tmux_session, e);
+            None
+        }
     }
 }
 

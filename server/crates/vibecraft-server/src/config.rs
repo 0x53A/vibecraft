@@ -18,6 +18,7 @@ pub struct Config {
     pub events_file: PathBuf,
     pub sessions_file: PathBuf,
     pub tiles_file: PathBuf,
+    pub templates_file: PathBuf,
     pub pending_prompt_file: PathBuf,
     pub max_events: usize,
     pub debug: bool,
@@ -46,6 +47,7 @@ impl Config {
             .unwrap_or_else(|_| data_dir.join("sessions.json"));
 
         let tiles_file = data_dir.join("tiles.json");
+        let templates_file = data_dir.join("templates.json");
         let pending_prompt_file = data_dir.join("pending-prompt.txt");
 
         let max_events = env::var("VIBECRAFT_MAX_EVENTS")
@@ -67,6 +69,7 @@ impl Config {
             events_file,
             sessions_file,
             tiles_file,
+            templates_file,
             pending_prompt_file,
             max_events,
             debug,

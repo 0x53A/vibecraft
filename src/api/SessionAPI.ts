@@ -31,6 +31,16 @@ export interface SessionFlags {
   tools?: string[]
   mcpServers?: McpServerConfig[]
   tentacles?: TentaclesConfig
+  systemPromptMode?: string
+  systemPromptText?: string
+  memory?: boolean
+}
+
+export interface PromptTemplate {
+  name: string
+  text: string
+  createdAt: number
+  updatedAt: number
 }
 
 export interface CreateSessionResponse {
@@ -156,16 +166,21 @@ export function createSessionAPI(apiUrl: string) {
     },
 
     /**
-     * Restart an offline session
+     * Get spawn flags and metadata for a session (used to prepopulate restart UI)
      */
-    async restartSession(sessionId: string): Promise<SimpleResponse> {
+    async getSessionSpawnFlags(sessionId: string): Promise<{
+      ok: boolean
+      spawnFlags?: SessionFlags
+      name?: string
+      cwd?: string
+      claudeSessionId?: string
+      error?: string
+    }> {
       try {
-        const response = await fetch(`${apiUrl}/sessions/${sessionId}/restart`, {
-          method: 'POST',
-        })
+        const response = await fetch(`${apiUrl}/sessions/${sessionId}/spawn-flags`)
         return await response.json()
       } catch (e) {
-        console.error('Error restarting session:', e)
+        console.error('Error fetching session spawn flags:', e)
         return { ok: false, error: 'Network error' }
       }
     },
@@ -270,6 +285,51 @@ export function createSessionAPI(apiUrl: string) {
         return await response.json()
       } catch (e) {
         console.error('Error removing target:', e)
+        return { ok: false, error: 'Network error' }
+      }
+    },
+
+    /**
+     * List all prompt templates
+     */
+    async listTemplates(): Promise<{ ok: boolean; templates?: PromptTemplate[]; error?: string }> {
+      try {
+        const response = await fetch(`${apiUrl}/templates`)
+        return await response.json()
+      } catch (e) {
+        console.error('Error listing templates:', e)
+        return { ok: false, error: 'Network error' }
+      }
+    },
+
+    /**
+     * Save (create or update) a prompt template
+     */
+    async saveTemplate(name: string, text: string): Promise<{ ok: boolean; template?: PromptTemplate; error?: string }> {
+      try {
+        const response = await fetch(`${apiUrl}/templates`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, text }),
+        })
+        return await response.json()
+      } catch (e) {
+        console.error('Error saving template:', e)
+        return { ok: false, error: 'Network error' }
+      }
+    },
+
+    /**
+     * Delete a prompt template by name
+     */
+    async deleteTemplate(name: string): Promise<SimpleResponse> {
+      try {
+        const response = await fetch(`${apiUrl}/templates/${encodeURIComponent(name)}`, {
+          method: 'DELETE',
+        })
+        return await response.json()
+      } catch (e) {
+        console.error('Error deleting template:', e)
         return { ok: false, error: 'Network error' }
       }
     },

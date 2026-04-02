@@ -20,7 +20,7 @@ import { getStationForTool } from '../../../shared/types'
 export function registerNotificationHandlers(): void {
   // Tool completion notifications
   eventBus.on('post_tool_use', (event: PostToolUseEvent, ctx) => {
-    if (!event.success || !ctx.scene) return
+    if (ctx.isHistory || !event.success || !ctx.scene) return
 
     const input = event.toolInput as Record<string, unknown>
     let notificationText: string | null = null

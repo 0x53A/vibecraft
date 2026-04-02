@@ -43,6 +43,8 @@ export interface EventContext {
   session: SessionContext | null
   /** Sound enabled flag */
   soundEnabled: boolean
+  /** True when replaying history on connect — skip sounds, animations, notifications */
+  isHistory: boolean
 }
 
 /**

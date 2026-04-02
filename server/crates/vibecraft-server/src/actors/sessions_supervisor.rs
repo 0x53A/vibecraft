@@ -19,8 +19,8 @@ use crate::projects::ProjectsManager;
 use crate::tmux;
 use crate::types::{
     ClaudeEvent, CreateSessionRequest, CreateTextTileRequest, KnownProject,
-    ManagedSession, ServerMessage, SessionStatus, TextTile, UpdateSessionRequest,
-    UpdateTextTileRequest,
+    ManagedSession, PromptTemplate, SaveTemplateRequest, ServerMessage, SessionStatus,
+    TextTile, UpdateSessionRequest, UpdateTextTileRequest,
 };
 
 use super::hub::HubMsg;
@@ -50,7 +50,6 @@ pub enum SessionsMsg {
     SessionPermission(String, String, String, RpcReplyPort<Result<(), String>>),
     /// Fire-and-forget permission response (from WS client message).
     SessionPermissionCast(String, String, String),
-    SessionRestart(String, RpcReplyPort<Result<ManagedSession, String>>),
     // ── Health ──────────────────────────────────────────────────────────
     HealthCheck,
     Refresh(RpcReplyPort<Vec<ManagedSession>>),
@@ -60,6 +59,11 @@ pub enum SessionsMsg {
     CreateTile(CreateTextTileRequest, RpcReplyPort<TextTile>),
     UpdateTile(String, UpdateTextTileRequest, RpcReplyPort<Option<TextTile>>),
     DeleteTile(String, RpcReplyPort<bool>),
+
+    // ── Templates ─────────────────────────────────────────────────────
+    ListTemplates(RpcReplyPort<Vec<PromptTemplate>>),
+    SaveTemplate(SaveTemplateRequest, RpcReplyPort<PromptTemplate>),
+    DeleteTemplate(String, RpcReplyPort<bool>),
 
     // ── Projects ────────────────────────────────────────────────────────
     ListProjects(RpcReplyPort<Vec<KnownProject>>),
@@ -96,6 +100,8 @@ pub struct SupervisorState {
     config: Config,
     // Tiles
     tiles: HashMap<String, TextTile>,
+    // Prompt templates (keyed by name)
+    templates: HashMap<String, PromptTemplate>,
     // Projects
     projects_manager: ProjectsManager,
     // Tentacles registries, keyed by managed session ID
@@ -126,6 +132,7 @@ impl Actor for SessionsSupervisorActor {
             hub: args.hub.clone(),
             config: args.config.clone(),
             tiles: HashMap::new(),
+            templates: HashMap::new(),
             projects_manager: ProjectsManager::new(),
             tentacles_registries: HashMap::new(),
         };
@@ -198,6 +205,7 @@ impl Actor for SessionsSupervisorActor {
 
         // Load tiles
         load_tiles(&args.config, &mut state).await;
+        load_templates(&args.config, &mut state).await;
 
         // Schedule health check
         myself.send_after(Duration::from_secs(2), || SessionsMsg::HealthCheck);
@@ -334,18 +342,6 @@ impl Actor for SessionsSupervisorActor {
                 }
             }
 
-            SessionsMsg::SessionRestart(id, reply) => {
-                if let Some(actor_ref) = state.actors.get(&id) {
-                    let _ = actor_ref.cast(SessionMsg::Restart(reply));
-                    // Also clear old linkings
-                    state
-                        .claude_to_managed
-                        .retain(|_, mid| mid != &id);
-                } else {
-                    let _ = reply.send(Err("Session not found".into()));
-                }
-            }
-
             // ── Health ──────────────────────────────────────────────────
             SessionsMsg::HealthCheck => {
                 self.do_health_check(state).await;
@@ -409,6 +405,44 @@ impl Actor for SessionsSupervisorActor {
                     info!("Deleted text tile: \"{}\"", tile.text);
                     save_tiles(&state.config, &state.tiles).await;
                     self.broadcast_tiles(state);
+                    let _ = reply.send(true);
+                } else {
+                    let _ = reply.send(false);
+                }
+            }
+
+            // ── Templates ─────────────────────────────────────────────
+            SessionsMsg::ListTemplates(reply) => {
+                let templates: Vec<PromptTemplate> =
+                    state.templates.values().cloned().collect();
+                let _ = reply.send(templates);
+            }
+
+            SessionsMsg::SaveTemplate(req, reply) => {
+                let now = now_ms();
+                let template = if let Some(existing) = state.templates.get_mut(&req.name) {
+                    existing.text = req.text;
+                    existing.updated_at = now;
+                    existing.clone()
+                } else {
+                    let t = PromptTemplate {
+                        name: req.name.clone(),
+                        text: req.text,
+                        created_at: now,
+                        updated_at: now,
+                    };
+                    state.templates.insert(req.name.clone(), t.clone());
+                    t
+                };
+                info!("Saved template: \"{}\"", template.name);
+                save_templates(&state.config, &state.templates).await;
+                let _ = reply.send(template);
+            }
+
+            SessionsMsg::DeleteTemplate(name, reply) => {
+                if state.templates.remove(&name).is_some() {
+                    info!("Deleted template: \"{}\"", name);
+                    save_templates(&state.config, &state.templates).await;
                     let _ = reply.send(true);
                 } else {
                     let _ = reply.send(false);
@@ -595,13 +629,13 @@ impl SessionsSupervisorActor {
             claude_args.push("--chrome".into());
         }
 
-        // System prompt mode
+        // System prompt mode (values are shell_quote'd in the spawn loop below)
         match flags.and_then(|f| f.system_prompt_mode.as_deref()) {
             Some("append") => {
                 if let Some(text) = flags.and_then(|f| f.system_prompt_text.as_ref()) {
                     if !text.is_empty() {
                         claude_args.push("--append-system-prompt".into());
-                        claude_args.push(shell_quote(text));
+                        claude_args.push(text.clone());
                     }
                 }
             }
@@ -609,7 +643,7 @@ impl SessionsSupervisorActor {
                 let text = flags.and_then(|f| f.system_prompt_text.as_ref()).cloned().unwrap_or_default();
                 let text = if text.trim().is_empty() { ".".into() } else { text };
                 claude_args.push("--system-prompt".into());
-                claude_args.push(shell_quote(&text));
+                claude_args.push(text);
             }
             _ => {} // "default" or None — no extra args
         }
@@ -776,6 +810,14 @@ impl SessionsSupervisorActor {
             // Clean up mappings
             state.claude_to_managed.retain(|_, mid| mid != id);
             state.tentacles_registries.remove(id);
+
+            // Clean up MCP config file
+            let mcp_path = format!(
+                "{}/.vibecraft/data/mcp/{}.json",
+                std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()),
+                id,
+            );
+            let _ = tokio::fs::remove_file(&mcp_path).await;
 
             info!(
                 "Deleted session: {} ({})",
@@ -998,6 +1040,43 @@ async fn save_tiles(config: &Config, tiles: &HashMap<String, TextTile>) {
         }
         Err(e) => {
             error!("Failed to serialize tiles: {e}");
+        }
+    }
+}
+
+async fn load_templates(config: &Config, state: &mut SupervisorState) {
+    let path = &config.templates_file;
+    match tokio::fs::read_to_string(path).await {
+        Ok(contents) => match serde_json::from_str::<Vec<PromptTemplate>>(&contents) {
+            Ok(list) => {
+                for t in list {
+                    state.templates.insert(t.name.clone(), t);
+                }
+            }
+            Err(e) => {
+                warn!("Failed to parse templates file: {e}");
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            warn!("Failed to read templates file: {e}");
+        }
+    }
+}
+
+async fn save_templates(config: &Config, templates: &HashMap<String, PromptTemplate>) {
+    let values: Vec<&PromptTemplate> = templates.values().collect();
+    match serde_json::to_string_pretty(&values) {
+        Ok(json) => {
+            if let Some(parent) = config.templates_file.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            if let Err(e) = tokio::fs::write(&config.templates_file, json).await {
+                error!("Failed to save templates: {e}");
+            }
+        }
+        Err(e) => {
+            error!("Failed to serialize templates: {e}");
         }
     }
 }

@@ -36,3 +36,7 @@ npm-debug.log*
 bin/vibecraft
 scripts/test-*.sh
 todo.txt
+
+# Terminal WASM build output
+terminal-component/pkg/
+terminal-component/target/

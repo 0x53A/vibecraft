@@ -581,6 +581,23 @@ pub struct UpdateTextTileRequest {
     pub color: Option<String>,
 }
 
+// ── System prompt templates ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptTemplate {
+    pub name: String,
+    pub text: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveTemplateRequest {
+    pub name: String,
+    pub text: String,
+}
+
 // ── Known projects ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

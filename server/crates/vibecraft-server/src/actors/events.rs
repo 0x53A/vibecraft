@@ -93,12 +93,12 @@ impl Actor for EventsActor {
                 }
                 state.seen_ids.insert(event.id().to_string());
 
-                // Trim seen_ids to prevent unbounded growth
+                // Trim seen_ids to prevent unbounded growth.
+                // Rebuild from the events vec (which is ordered) to keep recent IDs.
                 if state.seen_ids.len() > state.max_events * 2 {
-                    let ids: Vec<String> = state.seen_ids.iter().cloned().collect();
                     state.seen_ids.clear();
-                    for id in ids.into_iter().rev().take(state.max_events) {
-                        state.seen_ids.insert(id);
+                    for ev in &state.events {
+                        state.seen_ids.insert(ev.id().to_string());
                     }
                 }
 
@@ -132,6 +132,12 @@ impl Actor for EventsActor {
                 if state.events.len() > state.max_events {
                     let drain_count = state.events.len() - state.max_events;
                     state.events.drain(..drain_count);
+                }
+
+                // Prevent unbounded growth of pending_tool_uses from interrupted tools
+                if state.pending_tool_uses.len() > state.max_events {
+                    let cutoff = state.events.first().map(|e| e.timestamp()).unwrap_or(0);
+                    state.pending_tool_uses.retain(|_, e| e.timestamp() >= cutoff);
                 }
 
                 // 4. Broadcast event

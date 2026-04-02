@@ -487,6 +487,154 @@
   overflow-y: auto;
 }
 
+/* Template Editor Modal */
+#template-editor-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100; /* above new-session-modal (1000) */
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s, visibility 0.2s;
+}
+
+#template-editor-modal.visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+#template-editor-modal.visible .modal-content {
+  transform: scale(1) translateY(0);
+}
+
+#template-editor-modal .modal-content-wide {
+  width: 640px;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.template-section-block {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  margin-bottom: 4px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.template-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.template-section-header input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
+.template-section-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.template-section-toggle {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 6px;
+}
+
+.template-section-toggle:hover {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.template-section-preview {
+  margin: 0;
+  padding: 8px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.4);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.template-insertion-wrapper {
+  margin: 4px 0;
+}
+
+.template-insertion-area {
+  width: 100%;
+  background: rgba(167, 139, 250, 0.05);
+  border: 1px dashed rgba(167, 139, 250, 0.2);
+  border-radius: 4px;
+  padding: 6px 10px;
+  color: #fff;
+  font-size: 12px;
+  font-family: monospace;
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.template-insertion-area::placeholder {
+  color: rgba(167, 139, 250, 0.3);
+  font-style: italic;
+}
+
+.template-insertion-area:focus {
+  border-color: rgba(167, 139, 250, 0.5);
+  background: rgba(167, 139, 250, 0.08);
+}
+
+.modal-btn-danger {
+  background: rgba(248, 113, 113, 0.2);
+  border-color: rgba(248, 113, 113, 0.4);
+  color: #f87171;
+}
+
+.modal-btn-danger:hover {
+  background: rgba(248, 113, 113, 0.3);
+  border-color: rgba(248, 113, 113, 0.6);
+}
+
+.modal-select {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: #fff;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+
+.modal-select:focus {
+  border-color: #a78bfa;
+}
+
+.modal-select option {
+  background: #1a1a1a;
+  color: #fff;
+}
+
 /* Settings Modal */
 #settings-modal {
   position: fixed;

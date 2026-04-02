@@ -76,8 +76,8 @@ function pickAnimation(event: PostToolUseEvent): string | null {
 
 export function registerAnimationHandlers(): void {
   eventBus.on('post_tool_use', (event: PostToolUseEvent, ctx) => {
-    // Need a character to animate
-    if (!ctx.session?.claude) return
+    // Need a character to animate; skip during history replay
+    if (ctx.isHistory || !ctx.session?.claude) return
 
     const animation = pickAnimation(event)
     if (animation) {

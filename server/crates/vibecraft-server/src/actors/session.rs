@@ -37,8 +37,6 @@ pub enum SessionMsg {
     Cancel(RpcReplyPort<Result<(), String>>),
     /// Respond to a permission prompt. (permission_id, response_number)
     PermissionResponse(String, String),
-    /// Restart this session's tmux.
-    Restart(RpcReplyPort<Result<ManagedSession, String>>),
     /// Health update from supervisor (tmux alive check).
     HealthUpdate { alive: bool },
 
@@ -71,10 +69,8 @@ pub struct SessionState {
     hub: ActorRef<HubMsg>,
     supervisor: ActorRef<SessionsMsg>,
     poller: Option<ActorRef<TmuxPollerMsg>>,
-    exec_path: String,
     working_timeout_ms: u64,
     working_timeout_check_interval_ms: u64,
-    skip_permissions: bool,
     git_manager: GitStatusManager,
     tentacles_handle: Option<crate::tentacles::TentaclesHandle>,
 }
@@ -137,10 +133,8 @@ impl Actor for SessionActor {
             hub: args.hub,
             supervisor: args.supervisor,
             poller: Some(poller_ref),
-            exec_path: args.exec_path,
             working_timeout_ms: args.working_timeout_ms,
             working_timeout_check_interval_ms: args.working_timeout_check_interval_ms,
-            skip_permissions: args.skip_permissions,
             git_manager,
             tentacles_handle: args.tentacles_handle,
         })
@@ -317,45 +311,6 @@ impl Actor for SessionActor {
                 }
             }
 
-            SessionMsg::Restart(reply) => {
-                let result = self.do_restart(state).await;
-                match &result {
-                    Ok(_session) => {
-                        // Respawn the TmuxPoller
-                        if let Some(ref poller) = state.poller {
-                            poller.stop(Some("restarting".to_string()));
-                        }
-                        let poller_name = format!(
-                            "tmux-poller-{}",
-                            &state.session.id[..8.min(state.session.id.len())]
-                        );
-                        match Actor::spawn_linked(
-                            Some(poller_name),
-                            TmuxPollerActor,
-                            TmuxPollerArgs {
-                                tmux_session: state.session.tmux_session.clone(),
-                                exec_path: state.exec_path.clone(),
-                                parent: myself.clone(),
-                                skip_permissions: state.skip_permissions,
-                            },
-                            myself.get_cell(),
-                        )
-                        .await
-                        {
-                            Ok((poller_ref, _)) => {
-                                state.poller = Some(poller_ref);
-                            }
-                            Err(e) => {
-                                info!("Failed to respawn TmuxPoller: {e}");
-                            }
-                        }
-                        self.notify_supervisor(state);
-                    }
-                    Err(_) => {}
-                }
-                let _ = reply.send(result);
-            }
-
             SessionMsg::HealthUpdate { alive } => {
                 let prev_status = state.session.status.clone();
                 if alive {
@@ -384,7 +339,7 @@ impl Actor for SessionActor {
                     // Broadcast token update directly via hub
                     let _ = state.hub.cast(HubMsg::Broadcast(
                         crate::types::ServerMessage::Tokens {
-                            session: state.session.tmux_session.clone(),
+                            session: state.session.id.clone(),
                             current,
                             cumulative: state.token_cumulative,
                         },
@@ -538,63 +493,6 @@ impl SessionActor {
         ));
     }
 
-    async fn do_restart(&self, state: &mut SessionState) -> Result<ManagedSession, String> {
-        let tmux_session = &state.session.tmux_session;
-        let exec_path = &state.exec_path;
-
-        // Kill existing session (ignore errors)
-        let _ = tokio::process::Command::new("tmux")
-            .args(["kill-session", "-t", tmux_session])
-            .env("PATH", exec_path)
-            .output()
-            .await;
-
-        let cwd = state.session.cwd.as_deref().unwrap_or("/tmp");
-        let session_id = &state.session.id;
-
-        // Use shell_quote to prevent command injection
-        fn shell_quote(s: &str) -> String {
-            format!("'{}'", s.replace('\'', "'\\''"))
-        }
-        let spawn_cmd = format!(
-            "VIBECRAFT_MANAGED_SESSION_ID={} PATH={} claude -c --permission-mode=bypassPermissions --dangerously-skip-permissions",
-            shell_quote(session_id),
-            shell_quote(exec_path),
-        );
-
-        let result = tokio::process::Command::new("tmux")
-            .args([
-                "new-session",
-                "-d",
-                "-s",
-                tmux_session,
-                "-c",
-                cwd,
-                &spawn_cmd,
-            ])
-            .env("PATH", exec_path)
-            .output()
-            .await
-            .map_err(|e| format!("Failed to restart: {e}"))?;
-
-        if !result.status.success() {
-            let err = String::from_utf8_lossy(&result.stderr);
-            return Err(format!("Failed to restart: {err}"));
-        }
-
-        state.session.status = SessionStatus::Idle;
-        state.session.last_activity = now_ms();
-        state.session.claude_session_id = None;
-        state.session.current_tool = None;
-
-        info!(
-            "Restarted session: {} ({})",
-            state.session.name,
-            &state.session.id[..8.min(state.session.id.len())]
-        );
-
-        Ok(state.session.clone())
-    }
 }
 
 fn now_ms() -> u64 {

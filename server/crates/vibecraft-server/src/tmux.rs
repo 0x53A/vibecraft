@@ -214,13 +214,10 @@ pub fn detect_trust_prompt(output: &str) -> bool {
 }
 
 /// Detect bypass permissions warning in tmux output.
-/// Only matches when the warning is at the bottom of the terminal (last 10 lines).
+/// Must match the actual Claude Code WARNING dialog, not the status line
+/// (which shows "bypass permissions on").
 pub fn detect_bypass_warning(output: &str) -> bool {
-    let lines: Vec<&str> = output.lines().collect();
-    let start = lines.len().saturating_sub(10);
-    lines[start..]
-        .iter()
-        .any(|l| l.contains("bypass") && l.contains("permission"))
+    output.contains("WARNING") && output.contains("Bypass Permissions mode")
 }
 
 /// Validate a directory path: must exist, be a directory, and contain no shell metacharacters.
@@ -303,7 +300,10 @@ mod tests {
 
     #[test]
     fn test_detect_bypass_warning() {
-        assert!(detect_bypass_warning("warning: bypass permission check"));
+        // Matches actual Claude Code WARNING dialog
+        assert!(detect_bypass_warning("│  WARNING  │\n│  You are entering Bypass Permissions mode. In this mode:"));
+        // Must NOT match the status line
+        assert!(!detect_bypass_warning("⏵⏵ bypass permissions on (shift+tab to cycle)"));
         assert!(!detect_bypass_warning("everything is fine"));
     }
 

@@ -14,7 +14,7 @@ import type { StopEvent, UserPromptSubmitEvent } from '../../../shared/types'
 export function registerZoneHandlers(): void {
   // Set attention state when Claude stops (finished work)
   eventBus.on('stop', (event: StopEvent, ctx) => {
-    if (!ctx.session || !ctx.scene) return
+    if (ctx.isHistory || !ctx.session || !ctx.scene) return
 
     // Set finished attention - agent completed its work
     ctx.scene.setZoneAttention(event.sessionId, 'finished')
@@ -23,7 +23,7 @@ export function registerZoneHandlers(): void {
 
   // Clear attention and set working when user submits prompt
   eventBus.on('user_prompt_submit', (event: UserPromptSubmitEvent, ctx) => {
-    if (!ctx.session || !ctx.scene) return
+    if (ctx.isHistory || !ctx.session || !ctx.scene) return
 
     // Clear attention - user is now engaged
     ctx.scene.clearZoneAttention(event.sessionId)

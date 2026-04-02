@@ -60,6 +60,8 @@ import { checkForUpdates } from './ui/VersionChecker'
 import { drawMode } from './ui/DrawMode'
 import { setupTextLabelModal, showTextLabelModal } from './ui/TextLabelModal'
 import { createSessionAPI, type SessionAPI } from './api'
+import { setupTemplateEditor, openTemplateEditor } from './ui/TemplateEditor'
+import type { PromptTemplate } from './api/SessionAPI'
 
 // ============================================================================
 // Configuration
@@ -276,6 +278,7 @@ function renderManagedSessions(): void {
       </div>
       <div class="session-actions">
         ${session.status === 'offline' ? `<button class="restart-btn" title="Restart session">🔄</button>` : ''}
+        <button class="tmux-btn" title="Show tmux output">⬛</button>
         <button class="rename-btn" title="Rename">✏️</button>
         <button class="delete-btn" title="Delete">🗑️</button>
       </div>
@@ -311,6 +314,12 @@ function renderManagedSessions(): void {
       restartManagedSession(session.id, session.name)
     })
 
+    // Tmux output button
+    el.querySelector('.tmux-btn')?.addEventListener('click', (e) => {
+      e.stopPropagation()
+      toggleTerminalPanel(session.id)
+    })
+
     container.appendChild(el)
   })
 }
@@ -334,6 +343,12 @@ function selectManagedSession(sessionId: string | null): void {
   // Update feed filter to show only this session's events (or all if null)
   if (sessionId) {
     const session = state.managedSessions.find(s => s.id === sessionId)
+    console.log('[DEBUG selectManagedSession]', {
+      managedId: sessionId,
+      claudeSessionId: session?.claudeSessionId,
+      sessionName: session?.name,
+      allSessions: state.managedSessions.map(s => ({ id: s.id.slice(0, 8), name: s.name, claudeId: s.claudeSessionId?.slice(0, 8) })),
+    })
     // Filter by claudeSessionId if available, otherwise show nothing (session has no events yet)
     state.feedManager?.setFilter(session?.claudeSessionId ?? '__none__')
 
@@ -475,39 +490,23 @@ async function deleteManagedSession(sessionId: string): Promise<void> {
 }
 
 /**
- * Restart an offline session
+ * Restart an offline session by opening the config modal prepopulated with
+ * the old session's flags and a resume ID.
  */
-async function restartManagedSession(sessionId: string, sessionName: string): Promise<void> {
-  // Show feedback while restarting
-  const statusEl = document.getElementById('connection-status')
-  const originalText = statusEl?.textContent
-  if (statusEl) {
-    statusEl.textContent = `Restarting ${sessionName}...`
-    statusEl.className = ''
-  }
-
-  const data = await sessionAPI.restartSession(sessionId)
-
+async function restartManagedSession(sessionId: string, _sessionName: string): Promise<void> {
+  const data = await sessionAPI.getSessionSpawnFlags(sessionId)
   if (!data.ok) {
-    console.error('Failed to restart session:', data.error)
-    if (statusEl) {
-      statusEl.textContent = `Failed: ${data.error}`
-      statusEl.className = 'error'
-      setTimeout(() => {
-        statusEl.textContent = originalText || 'Connected'
-        statusEl.className = 'connected'
-      }, 3000)
-    }
-  } else {
-    if (statusEl) {
-      statusEl.textContent = `${sessionName} restarted!`
-      statusEl.className = 'connected'
-      setTimeout(() => {
-        statusEl.textContent = originalText || 'Connected'
-      }, 2000)
-    }
+    console.error('Failed to fetch session config:', data.error)
+    return
   }
-  // Update will be broadcast via WebSocket
+
+  openNewSessionModal(undefined, {
+    name: data.name,
+    cwd: data.cwd,
+    resumeId: data.claudeSessionId,
+    flags: data.spawnFlags,
+    restartSessionId: sessionId,
+  })
 }
 
 /**
@@ -550,10 +549,45 @@ function goToNextAttention(): void {
 let currentModalHint: { x: number; z: number } | null = null
 
 /**
+ * Populate the template dropdown with fetched templates
+ */
+function populateTemplateDropdown(templates: PromptTemplate[]): void {
+  ;(window as any).__vibecraftTemplates = templates
+  const select = document.getElementById('template-select') as HTMLSelectElement
+  if (!select) return
+
+  // Preserve current selection
+  const currentValue = select.value
+
+  // Clear and rebuild options
+  select.innerHTML = '<option value="">(none - raw text)</option>'
+  for (const t of templates) {
+    const opt = document.createElement('option')
+    opt.value = t.name
+    opt.textContent = t.name
+    select.appendChild(opt)
+  }
+
+  // Restore selection if still exists
+  if (currentValue && templates.some((t) => t.name === currentValue)) {
+    select.value = currentValue
+  }
+}
+
+/**
  * Open the new session modal (callable from anywhere)
  * @param hintPosition - Optional world position from click for direction-aware placement
  */
-function openNewSessionModal(hintPosition?: { x: number; z: number }): void {
+interface ModalPrepopulate {
+  name?: string
+  cwd?: string
+  resumeId?: string
+  flags?: SessionFlags
+  /** ID of the old session being restarted (will be deleted on create) */
+  restartSessionId?: string
+}
+
+function openNewSessionModal(hintPosition?: { x: number; z: number }, prepopulate?: ModalPrepopulate): void {
   const modal = document.getElementById('new-session-modal')
   const nameInput = document.getElementById('session-name-input') as HTMLInputElement
   const cwdInput = document.getElementById('session-cwd-input') as HTMLInputElement
@@ -563,36 +597,89 @@ function openNewSessionModal(hintPosition?: { x: number; z: number }): void {
   // Store hint for when session is created
   currentModalHint = hintPosition ?? null
 
+  // Store restart session ID so handleCreate can delete the old session
+  ;(modal as any).__restartSessionId = prepopulate?.restartSessionId ?? null
+
   // Request notification permission on first interaction
   AttentionSystem.requestPermission()
 
-  // Reset inputs
+  const pFlags = prepopulate?.flags
+
+  // Reset inputs (or prepopulate)
   if (nameInput) {
-    nameInput.value = ''
-    nameInput.dataset.autoFilled = 'false'
+    nameInput.value = prepopulate?.name ?? ''
+    nameInput.dataset.autoFilled = prepopulate?.name ? 'true' : 'false'
   }
-  if (cwdInput) cwdInput.value = ''
+  if (cwdInput) cwdInput.value = prepopulate?.cwd ?? ''
 
-  // Reset session mode to "new"
-  const newRadio = document.querySelector<HTMLInputElement>('input[name="session-mode"][value="new"]')
-  if (newRadio) newRadio.checked = true
-  const resumeWrapper = document.getElementById('resume-input-wrapper')
-  if (resumeWrapper) resumeWrapper.style.display = 'none'
+  // Session mode
+  if (prepopulate?.resumeId) {
+    const resumeRadio = document.querySelector<HTMLInputElement>('input[name="session-mode"][value="resume"]')
+    if (resumeRadio) resumeRadio.checked = true
+    const resumeWrapper = document.getElementById('resume-input-wrapper')
+    if (resumeWrapper) resumeWrapper.style.display = ''
+  } else {
+    const newRadio = document.querySelector<HTMLInputElement>('input[name="session-mode"][value="new"]')
+    if (newRadio) newRadio.checked = true
+    const resumeWrapper = document.getElementById('resume-input-wrapper')
+    if (resumeWrapper) resumeWrapper.style.display = 'none'
+  }
 
-  // Reset system prompt to "default"
-  const defaultPromptRadio = document.querySelector<HTMLInputElement>('input[name="system-prompt-mode"][value="default"]')
-  if (defaultPromptRadio) defaultPromptRadio.checked = true
+  // System prompt
   const sysPromptTextarea = document.getElementById('session-system-prompt') as HTMLTextAreaElement
-  if (sysPromptTextarea) { sysPromptTextarea.value = ''; sysPromptTextarea.style.display = 'none' }
+  const templatePickerEl = document.getElementById('template-picker')
+  const templateSelectEl = document.getElementById('template-select') as HTMLSelectElement
 
-  // Reset memory checkbox
+  const sysMode = pFlags?.systemPromptMode ?? 'default'
+  const sysRadio = document.querySelector<HTMLInputElement>(`input[name="system-prompt-mode"][value="${sysMode}"]`)
+    ?? document.querySelector<HTMLInputElement>('input[name="system-prompt-mode"][value="default"]')
+  if (sysRadio) sysRadio.checked = true
+  if (sysPromptTextarea) {
+    sysPromptTextarea.value = pFlags?.systemPromptText ?? ''
+    sysPromptTextarea.style.display = sysMode === 'default' ? 'none' : ''
+  }
+  if (templatePickerEl) templatePickerEl.style.display = sysMode === 'default' ? 'none' : ''
+  if (templateSelectEl) templateSelectEl.value = ''
+
+  // Fetch templates and populate dropdown, auto-select "default" if exists (only for fresh sessions)
+  sessionAPI.listTemplates().then((data) => {
+    if (data.ok && data.templates) {
+      populateTemplateDropdown(data.templates)
+      // If no prepopulated system prompt and a "default" template exists, auto-select it
+      if (!pFlags?.systemPromptMode || pFlags.systemPromptMode === 'default') {
+        const defaultTemplate = data.templates.find((t) => t.name === 'default')
+        if (defaultTemplate) {
+          const replaceRadio = document.querySelector<HTMLInputElement>('input[name="system-prompt-mode"][value="replace"]')
+          if (replaceRadio) {
+            replaceRadio.checked = true
+            if (sysPromptTextarea) {
+              sysPromptTextarea.value = defaultTemplate.text
+              sysPromptTextarea.style.display = ''
+            }
+            if (templatePickerEl) templatePickerEl.style.display = ''
+            if (templateSelectEl) templateSelectEl.value = 'default'
+          }
+        }
+      }
+    }
+  })
+
+  // Memory checkbox
   const memCheck = document.getElementById('session-opt-memory') as HTMLInputElement
-  if (memCheck) memCheck.checked = true
+  if (memCheck) memCheck.checked = pFlags?.memory ?? true
 
-  // Reset resume input and populate datalist
+  // Skip permissions
+  const skipPermsCheck = document.getElementById('session-opt-skip-perms') as HTMLInputElement
+  if (skipPermsCheck) skipPermsCheck.checked = pFlags?.skipPermissions ?? true
+
+  // Chrome
+  const chromeCheck = document.getElementById('session-opt-chrome') as HTMLInputElement
+  if (chromeCheck) chromeCheck.checked = pFlags?.chrome ?? false
+
+  // Resume input and populate datalist
   const resumeInput = document.getElementById('session-resume-input') as HTMLInputElement
   const resumeDatalist = document.getElementById('resumable-sessions-list') as HTMLDataListElement
-  if (resumeInput) resumeInput.value = ''
+  if (resumeInput) resumeInput.value = prepopulate?.resumeId ?? ''
   if (resumeDatalist) {
     resumeDatalist.innerHTML = ''
     sessionAPI.getResumableSessions().then(data => {
@@ -611,9 +698,10 @@ function openNewSessionModal(hintPosition?: { x: number; z: number }): void {
     })
   }
 
-  // Reset tools to all checked
+  // Tools checkboxes
+  const selectedTools = pFlags?.tools
   document.querySelectorAll<HTMLInputElement>('#tools-checkboxes input[type="checkbox"]').forEach((cb) => {
-    cb.checked = true
+    cb.checked = selectedTools ? selectedTools.includes(cb.value) : true
   })
 
   // Collapse tools/MCP/tentacles sections and clear entries
@@ -630,13 +718,16 @@ function openNewSessionModal(hintPosition?: { x: number; z: number }): void {
   const tentaclesList = document.getElementById('tentacles-targets-list')
   if (tentaclesList) tentaclesList.innerHTML = ''
   const tentaclesEnabledEl = document.getElementById('tentacles-enabled') as HTMLInputElement
-  if (tentaclesEnabledEl) tentaclesEnabledEl.checked = false
+  if (tentaclesEnabledEl) tentaclesEnabledEl.checked = pFlags?.tentacles?.enabled ?? false
   const tentaclesHostEl = document.getElementById('tentacles-host') as HTMLInputElement
-  if (tentaclesHostEl) { tentaclesHostEl.checked = true; tentaclesHostEl.disabled = true }
+  if (tentaclesHostEl) {
+    tentaclesHostEl.checked = true
+    tentaclesHostEl.disabled = !(pFlags?.tentacles?.enabled ?? false)
+  }
   const tentaclesAddContainerEl = document.getElementById('tentacles-add-container') as HTMLButtonElement
-  if (tentaclesAddContainerEl) tentaclesAddContainerEl.disabled = true
+  if (tentaclesAddContainerEl) tentaclesAddContainerEl.disabled = !(pFlags?.tentacles?.enabled ?? false)
   const tentaclesAddSshEl = document.getElementById('tentacles-add-ssh') as HTMLButtonElement
-  if (tentaclesAddSshEl) tentaclesAddSshEl.disabled = true
+  if (tentaclesAddSshEl) tentaclesAddSshEl.disabled = !(pFlags?.tentacles?.enabled ?? false)
 
   modal.classList.add('visible')
 
@@ -678,17 +769,55 @@ function setupManagedSessions(): void {
     })
   })
 
-  // System prompt radio buttons: show/hide textarea
+  // System prompt radio buttons: show/hide textarea and template picker
   const systemPromptRadios = document.querySelectorAll<HTMLInputElement>('input[name="system-prompt-mode"]')
   const systemPromptTextarea = document.getElementById('session-system-prompt') as HTMLTextAreaElement
+  const templatePicker = document.getElementById('template-picker')
+  const templateSelect = document.getElementById('template-select') as HTMLSelectElement
   systemPromptRadios.forEach((radio) => {
     radio.addEventListener('change', () => {
+      const isDefault = radio.value === 'default'
       if (systemPromptTextarea) {
-        systemPromptTextarea.style.display = radio.value === 'default' ? 'none' : ''
-        if (radio.value !== 'default') systemPromptTextarea.focus()
+        systemPromptTextarea.style.display = isDefault ? 'none' : ''
       }
+      if (templatePicker) {
+        templatePicker.style.display = isDefault ? 'none' : ''
+      }
+      if (!isDefault && systemPromptTextarea) systemPromptTextarea.focus()
     })
   })
+
+  // Template select: fill textarea when template chosen
+  if (templateSelect && systemPromptTextarea) {
+    templateSelect.addEventListener('change', () => {
+      const name = templateSelect.value
+      if (name && (window as any).__vibecraftTemplates) {
+        const tmpl = (window as any).__vibecraftTemplates.find((t: any) => t.name === name)
+        if (tmpl) systemPromptTextarea.value = tmpl.text
+      }
+    })
+  }
+
+  // Template edit button: open editor for selected template
+  const templateEditBtn = document.getElementById('template-edit-btn')
+  if (templateEditBtn) {
+    templateEditBtn.addEventListener('click', () => {
+      const name = templateSelect?.value
+      if (name && (window as any).__vibecraftTemplates) {
+        const tmpl = (window as any).__vibecraftTemplates.find((t: PromptTemplate) => t.name === name)
+        if (tmpl) openTemplateEditor(tmpl)
+        else openTemplateEditor()
+      } else {
+        openTemplateEditor()
+      }
+    })
+  }
+
+  // Template new button: open editor blank
+  const templateNewBtn = document.getElementById('template-new-btn')
+  if (templateNewBtn) {
+    templateNewBtn.addEventListener('click', () => openTemplateEditor())
+  }
 
   // Resume input: auto-fill cwd when a session is selected
   if (resumeInput && cwdInput) {
@@ -738,6 +867,7 @@ function setupManagedSessions(): void {
   const closeModal = (): void => {
     modal?.classList.remove('visible')
     currentModalHint = null  // Clear hint when modal closes
+    if (modal) (modal as any).__restartSessionId = null
   }
 
   const handleCreate = (): void => {
@@ -861,6 +991,13 @@ function setupManagedSessions(): void {
       pendingZoneTimeouts.delete(pendingId)
     }, ZONE_CREATION_TIMEOUT)
     pendingZoneTimeouts.set(pendingId, timeoutId)
+
+    // If this is a restart, delete the old session first
+    const restartSessionId = (modal as any).__restartSessionId as string | null
+    if (restartSessionId) {
+      deleteManagedSession(restartSessionId)
+      ;(modal as any).__restartSessionId = null
+    }
 
     // Play confirm sound
     soundManager.play('modal_confirm')
@@ -2191,7 +2328,7 @@ function updateStats() {
 // Event Handling
 // ============================================================================
 
-function handleEvent(event: ClaudeEvent) {
+function handleEvent(event: ClaudeEvent, isHistory = false) {
   // Get or create session for this event
   // Returns null if the session isn't linked to a managed session
   const session = getOrCreateSession(event.sessionId)
@@ -2205,6 +2342,7 @@ function handleEvent(event: ClaudeEvent) {
     feedManager: state.feedManager,
     timelineManager: state.timelineManager,
     soundEnabled: state.soundEnabled,
+    isHistory,
     session: session ? {
       id: event.sessionId,
       color: session.color,
@@ -2221,13 +2359,13 @@ function handleEvent(event: ClaudeEvent) {
   state.timelineManager?.add(event, eventColor)
   state.feedManager?.add(event, eventColor)
 
-  // Skip 3D scene updates for unlinked sessions
-  if (!session) {
+  // Skip 3D scene updates for unlinked sessions or history replay
+  if (!session || isHistory) {
     return
   }
 
-  // Pulse the zone to indicate activity
-  if (state.scene && (event.type === 'pre_tool_use' || event.type === 'user_prompt_submit')) {
+  // Pulse the zone to indicate activity (skip during history replay)
+  if (!isHistory && state.scene && (event.type === 'pre_tool_use' || event.type === 'user_prompt_submit')) {
     state.scene.pulseZone(event.sessionId)
     // Set working status when tools start (except for AskUserQuestion which sets attention)
     if (event.type === 'pre_tool_use') {
@@ -2621,57 +2759,67 @@ function setupPromptForm() {
 }
 
 // ============================================================================
-// Terminal Output Panel
+// Terminal Output Panel (GPU-rendered via WASM web component)
 // ============================================================================
 
-const TMUX_URL = `${API_URL}/tmux-output`
+let terminalSessionId: string | null = null
 
-let terminalPollInterval: number | null = null
+function toggleTerminalPanel(sessionId: string) {
+  const panel = document.getElementById('terminal-panel')
+  const container = document.getElementById('terminal-container')
+  if (!panel || !container) return
+
+  const isOpen = !panel.classList.contains('hidden') && terminalSessionId === sessionId
+
+  if (isOpen) {
+    // Close
+    closeTerminalPanel()
+  } else {
+    // Open (or switch session)
+    terminalSessionId = sessionId
+
+    // Remove any existing terminal element
+    container.innerHTML = ''
+
+    // Create the WASM terminal web component
+    try {
+      container.innerHTML = `<vibecraft-terminal session-id="${sessionId}"></vibecraft-terminal>`
+    } catch (e) {
+      console.error('[terminal] Failed:', e)
+      container.innerHTML =
+        `<div style="padding:16px;color:#ff6b6b;font-size:13px;">Terminal error: ${e}</div>`
+    }
+
+    panel.classList.remove('hidden')
+
+    // Update title
+    const title = document.getElementById('terminal-panel-title')
+    if (title) {
+      const sessions = Array.from(document.querySelectorAll('.session-item'))
+      const sessionEl = sessions.find(
+        (el) => (el as HTMLElement).dataset.sessionId === sessionId,
+      )
+      const name = sessionEl?.querySelector('.session-name')?.textContent
+      title.textContent = name ? `Terminal — ${name}` : 'Terminal'
+    }
+
+    // Focus the terminal for keyboard input
+    const termEl = container.querySelector('vibecraft-terminal') as HTMLElement | null
+    if (termEl) requestAnimationFrame(() => termEl.focus())
+  }
+}
+
+function closeTerminalPanel() {
+  const panel = document.getElementById('terminal-panel')
+  const container = document.getElementById('terminal-container')
+  if (panel) panel.classList.add('hidden')
+  if (container) container.innerHTML = ''
+  terminalSessionId = null
+}
 
 function setupTerminalToggle() {
-  const toggle = document.getElementById('terminal-toggle')
-  const panel = document.getElementById('terminal-panel')
-  const output = document.getElementById('terminal-output')
-
-  if (!toggle || !panel || !output) return
-
-  toggle.addEventListener('click', () => {
-    const isHidden = panel.classList.toggle('hidden')
-    toggle.classList.toggle('active', !isHidden)
-
-    if (!isHidden) {
-      // Start polling when visible
-      fetchTerminalOutput()
-      terminalPollInterval = window.setInterval(fetchTerminalOutput, 2000)
-    } else {
-      // Stop polling when hidden
-      if (terminalPollInterval) {
-        clearInterval(terminalPollInterval)
-        terminalPollInterval = null
-      }
-    }
-  })
-
-  async function fetchTerminalOutput() {
-    if (!output || !panel) return
-    try {
-      const response = await fetch(TMUX_URL)
-      const data = await response.json()
-      if (data.ok && data.output) {
-        // Strip ANSI codes and clean up
-        const cleaned = data.output
-          .replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '') // Remove ANSI codes
-          .replace(/\r/g, '') // Remove carriage returns
-        output.textContent = cleaned
-        // Auto-scroll to bottom
-        panel.scrollTop = panel.scrollHeight
-      } else if (data.error) {
-        output.textContent = `Error: ${data.error}`
-      }
-    } catch (e) {
-      output.textContent = 'Failed to connect to server'
-    }
-  }
+  // Close button
+  document.getElementById('terminal-panel-close')?.addEventListener('click', closeTerminalPanel)
 }
 
 // ============================================================================
@@ -3103,7 +3251,7 @@ function init() {
 
   state.client.onEvent(handleEvent)
 
-  // Handle history batch - pre-scan for completions before rendering
+  // Handle history batch - process events silently (no sounds/animations)
   state.client.onHistory((events) => {
     // First pass: collect all completed tool use IDs (across all sessions)
     for (const event of events) {
@@ -3112,9 +3260,9 @@ function init() {
         state.timelineManager?.markCompleted(e.toolUseId)
       }
     }
-    // Second pass: process all events (sessions created dynamically)
+    // Second pass: process all events with isHistory flag
     for (const event of events) {
-      handleEvent(event)
+      handleEvent(event, true)
     }
   })
 
@@ -3290,6 +3438,12 @@ function init() {
     }
 
     state.managedSessions = sessions
+
+    // Validate selected session still exists in the updated list
+    if (state.selectedManagedSession && !sessions.find(s => s.id === state.selectedManagedSession)) {
+      state.selectedManagedSession = null
+    }
+
     renderManagedSessions()
 
     // Sync zone labels with managed session names
@@ -3357,6 +3511,11 @@ function init() {
 
   // Setup managed sessions (orchestration)
   setupManagedSessions()
+
+  // Setup template editor
+  setupTemplateEditor(sessionAPI, (templates) => {
+    populateTemplateDropdown(templates)
+  })
 
   // Fetch server info (cwd, etc.)
   fetchServerInfo()

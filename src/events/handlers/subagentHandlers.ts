@@ -14,7 +14,7 @@ import type { PreToolUseEvent, PostToolUseEvent } from '../../../shared/types'
 export function registerSubagentHandlers(): void {
   // Spawn subagent when Task tool starts
   eventBus.on('pre_tool_use', (event: PreToolUseEvent, ctx) => {
-    if (!ctx.session) return
+    if (ctx.isHistory || !ctx.session) return
     if (event.tool !== 'Task') return
 
     const description = (event.toolInput as { description?: string }).description
@@ -24,7 +24,7 @@ export function registerSubagentHandlers(): void {
 
   // Remove subagent when Task tool completes
   eventBus.on('post_tool_use', (event: PostToolUseEvent, ctx) => {
-    if (!ctx.session) return
+    if (ctx.isHistory || !ctx.session) return
     if (event.tool !== 'Task') return
 
     ctx.session.subagents.remove(event.toolUseId)

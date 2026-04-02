@@ -27,10 +27,19 @@ export default defineConfig({
         target: `http://localhost:${serverPort}`,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
+      // Terminal stream WebSocket (WASM component connects without /api prefix)
+      '/sessions': {
+        target: `http://localhost:${serverPort}`,
+        ws: true,
+      },
     },
   },
   build: {
     target: 'esnext',
     sourcemap: true,
   },
+  optimizeDeps: {
+    exclude: ['vibecraft-terminal'],
+  },
+  assetsInclude: ['**/*.wasm'],
 })

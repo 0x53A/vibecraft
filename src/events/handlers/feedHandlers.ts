@@ -13,13 +13,13 @@ import type { PreToolUseEvent, StopEvent } from '../../../shared/types'
 export function registerFeedHandlers(): void {
   // Hide thinking indicator when tool starts
   eventBus.on('pre_tool_use', (_event: PreToolUseEvent, ctx) => {
-    if (!ctx.session || !ctx.feedManager) return
+    if (ctx.isHistory || !ctx.session || !ctx.feedManager) return
     ctx.feedManager.hideThinking(_event.sessionId)
   })
 
   // Hide thinking indicator on stop
   eventBus.on('stop', (event: StopEvent, ctx) => {
-    if (!ctx.feedManager) return
+    if (ctx.isHistory || !ctx.feedManager) return
     ctx.feedManager.hideThinking(event.sessionId)
   })
 

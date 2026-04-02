@@ -995,9 +995,42 @@ function setupManagedSessions(): void {
     container.appendChild(row)
   }
 
+  // Cache for docker containers/images (fetched once per modal open)
+  let dockerContainersCache: { name: string; image: string; status: string }[] | null = null
+  let dockerImagesCache: { name: string; size: string }[] | null = null
+
+  async function fetchDockerContainers(): Promise<typeof dockerContainersCache> {
+    if (dockerContainersCache) return dockerContainersCache
+    try {
+      const res = await fetch(`${API_URL}/docker/containers`)
+      const data = await res.json()
+      if (data.ok) dockerContainersCache = data.containers
+    } catch { /* docker not available */ }
+    return dockerContainersCache ?? []
+  }
+
+  async function fetchDockerImages(): Promise<typeof dockerImagesCache> {
+    if (dockerImagesCache) return dockerImagesCache
+    try {
+      const res = await fetch(`${API_URL}/docker/images`)
+      const data = await res.json()
+      if (data.ok) dockerImagesCache = data.images
+    } catch { /* docker not available */ }
+    return dockerImagesCache ?? []
+  }
+
+  // Reset cache when tentacles is enabled (so we fetch fresh data)
+  tentaclesEnabled?.addEventListener('change', () => {
+    if (tentaclesEnabled.checked) {
+      dockerContainersCache = null
+      dockerImagesCache = null
+    }
+  })
+
   // Add container target
   tentaclesAddContainer?.addEventListener('click', () => {
     if (!tentaclesList) return
+    const entryId = `tentacles-entry-${Date.now()}`
     const entry = document.createElement('div')
     entry.className = 'mcp-server-entry tentacles-target-entry'
     entry.dataset.targetType = 'container'
@@ -1012,7 +1045,8 @@ function setupManagedSessions(): void {
         <label class="tentacles-radio"><input type="radio" name="" value="dockerfile" /> From Dockerfile</label>
       </div>
       <div class="tentacles-container-fields">
-        <input type="text" class="tentacles-container-value" placeholder="container name" />
+        <input type="text" class="tentacles-container-value" placeholder="container name" list="${entryId}-suggestions" />
+        <datalist id="${entryId}-suggestions"></datalist>
       </div>
       <div class="tentacles-editable" style="display:none;">
         <label class="tentacles-radio"><input type="checkbox" class="tentacles-editable-checkbox" /> Allow agent to modify Dockerfile</label>
@@ -1032,9 +1066,48 @@ function setupManagedSessions(): void {
     })
 
     const valueInput = entry.querySelector<HTMLInputElement>('.tentacles-container-value')!
+    const datalist = entry.querySelector<HTMLDataListElement>(`#${entryId}-suggestions`)!
     const volumesSection = entry.querySelector<HTMLElement>('.tentacles-volumes')!
     const volumesList = entry.querySelector<HTMLElement>('.tentacles-volumes-list')!
     const editableSection = entry.querySelector<HTMLElement>('.tentacles-editable')!
+    const nameInput = entry.querySelector<HTMLInputElement>('.tentacles-target-name')!
+
+    // Populate datalist for container mode
+    async function populateContainerSuggestions() {
+      datalist.innerHTML = ''
+      const containers = await fetchDockerContainers()
+      for (const c of containers ?? []) {
+        const opt = document.createElement('option')
+        opt.value = c.name
+        opt.label = `${c.name} (${c.image}) — ${c.status}`
+        datalist.appendChild(opt)
+      }
+    }
+
+    // Populate datalist for image mode
+    async function populateImageSuggestions() {
+      datalist.innerHTML = ''
+      const images = await fetchDockerImages()
+      for (const img of images ?? []) {
+        const opt = document.createElement('option')
+        opt.value = img.name
+        opt.label = `${img.name} — ${img.size}`
+        datalist.appendChild(opt)
+      }
+    }
+
+    // Auto-fill target name from container/image selection
+    valueInput.addEventListener('change', () => {
+      if (!nameInput.value.trim()) {
+        const val = valueInput.value.trim()
+        // Use container name directly, or image name without tag/registry
+        const shortName = val.includes('/') ? val.split('/').pop()! : val
+        nameInput.value = shortName.split(':')[0]
+      }
+    })
+
+    // Populate initial suggestions
+    populateContainerSuggestions()
 
     // Mode switching
     entry.querySelectorAll<HTMLInputElement>('.tentacles-container-mode input[type="radio"]').forEach((radio) => {
@@ -1046,16 +1119,19 @@ function setupManagedSessions(): void {
             valueInput.placeholder = 'container name'
             volumesSection.style.display = 'none'
             editableSection.style.display = 'none'
+            populateContainerSuggestions()
             break
           case 'image':
             valueInput.placeholder = 'image (e.g. ubuntu:24.04)'
             volumesSection.style.display = ''
             editableSection.style.display = 'none'
+            populateImageSuggestions()
             break
           case 'dockerfile':
             valueInput.placeholder = 'path to Dockerfile'
             volumesSection.style.display = ''
             editableSection.style.display = ''
+            datalist.innerHTML = ''
             break
         }
       })
@@ -1065,7 +1141,7 @@ function setupManagedSessions(): void {
     entry.querySelector('.tentacles-add-volume')?.addEventListener('click', () => addVolumeRow(volumesList))
     entry.querySelector('.mcp-server-remove')?.addEventListener('click', () => entry.remove())
     tentaclesList.appendChild(entry)
-    entry.querySelector<HTMLInputElement>('.tentacles-target-name')?.focus()
+    nameInput.focus()
   })
 
   // Add SSH target

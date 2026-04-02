@@ -37,7 +37,7 @@ pub fn router(actors: Actors) -> Router {
                 };
                 match url.host_str() {
                     Some("localhost") | Some("127.0.0.1") => true,
-                    Some("vibecraft.sh") if url.scheme() == "https" => true,
+                    //Some("vibecraft.sh") if url.scheme() == "https" => true,
                     _ => false,
                 }
             },
@@ -82,6 +82,8 @@ pub fn router(actors: Actors) -> Router {
         .route("/projects", get(list_projects))
         .route("/projects/autocomplete", get(autocomplete_projects))
         .route("/projects/{path}", delete(delete_project))
+        .route("/docker/containers", get(list_docker_containers))
+        .route("/docker/images", get(list_docker_images))
         .route("/tiles", get(list_tiles).post(create_tile))
         .route("/tiles/{id}", put(update_tile).delete(delete_tile))
         .route("/ws", get(crate::websocket::handle_ws_upgrade))
@@ -899,6 +901,85 @@ async fn remove_target(
             }
         }
         Err((_, json)) => json,
+    }
+}
+
+// ── Docker helpers ──────────────────────────────────────────────────────────
+
+async fn list_docker_containers() -> impl IntoResponse {
+    match tokio::process::Command::new("docker")
+        .args(["ps", "--format", "{{.Names}}\t{{.Image}}\t{{.Status}}"])
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let containers: Vec<serde_json::Value> = stdout
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|line| {
+                    let parts: Vec<&str> = line.splitn(3, '\t').collect();
+                    serde_json::json!({
+                        "name": parts.first().unwrap_or(&""),
+                        "image": parts.get(1).unwrap_or(&""),
+                        "status": parts.get(2).unwrap_or(&""),
+                    })
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                JsonResponse(serde_json::json!({ "ok": true, "containers": containers })),
+            )
+        }
+        Ok(output) => {
+            let err = String::from_utf8_lossy(&output.stderr);
+            (
+                StatusCode::OK,
+                JsonResponse(serde_json::json!({ "ok": true, "containers": [], "warning": err.to_string() })),
+            )
+        }
+        Err(_) => (
+            StatusCode::OK,
+            JsonResponse(serde_json::json!({ "ok": true, "containers": [], "warning": "docker not found" })),
+        ),
+    }
+}
+
+async fn list_docker_images() -> impl IntoResponse {
+    match tokio::process::Command::new("docker")
+        .args(["images", "--format", "{{.Repository}}:{{.Tag}}\t{{.Size}}"])
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let images: Vec<serde_json::Value> = stdout
+                .lines()
+                .filter(|l| !l.is_empty() && !l.starts_with("<none>"))
+                .map(|line| {
+                    let parts: Vec<&str> = line.splitn(2, '\t').collect();
+                    serde_json::json!({
+                        "name": parts.first().unwrap_or(&""),
+                        "size": parts.get(1).unwrap_or(&""),
+                    })
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                JsonResponse(serde_json::json!({ "ok": true, "images": images })),
+            )
+        }
+        Ok(output) => {
+            let err = String::from_utf8_lossy(&output.stderr);
+            (
+                StatusCode::OK,
+                JsonResponse(serde_json::json!({ "ok": true, "images": [], "warning": err.to_string() })),
+            )
+        }
+        Err(_) => (
+            StatusCode::OK,
+            JsonResponse(serde_json::json!({ "ok": true, "images": [], "warning": "docker not found" })),
+        ),
     }
 }
 
